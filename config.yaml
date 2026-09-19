@@ -1,11 +1,11 @@
 # weekly_momentum_v1 — machine-readable parameters
-# Companion to STRATEGY_SPEC.md. Every number here is justified there.
+# Companion to docs/STRATEGY_SPEC.md. Every number here is justified there.
 # Code reads THIS file. No magic numbers anywhere else.
 
 strategy:
   name: weekly_momentum_v1
   version: 1.0.0
-  spec: STRATEGY_SPEC.md
+  spec: docs/STRATEGY_SPEC.md
 
 # ---------------------------------------------------------------- capital
 account:

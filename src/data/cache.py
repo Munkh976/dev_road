@@ -195,7 +195,7 @@ class PriceCache:
         if not self._manifest_path.exists():
             return {}
         try:
-            return json.loads(self._manifest_path.read_text())
+            return json.loads(self._manifest_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             log.warning("manifest corrupt; rebuilding from parquet files")
             return self.rebuild_manifest()
@@ -205,13 +205,17 @@ class PriceCache:
         for sym in self.symbols():
             st = self.inspect(sym)
             manifest[sym] = self._manifest_entry(st)
-        self._manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+        self._manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+        )
         return manifest
 
     def _update_manifest(self, symbol: str, stats: CacheStats) -> None:
         manifest = self.read_manifest()
         manifest[symbol.upper()] = self._manifest_entry(stats)
-        self._manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+        self._manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+        )
 
     @staticmethod
     def _manifest_entry(st: CacheStats) -> dict:

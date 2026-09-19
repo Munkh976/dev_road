@@ -256,11 +256,12 @@ class Config(BaseModel):
 
     @property
     def cache_path(self) -> Path:
-        return Path(os.getenv("WM_CACHE_DIR", self.data.cache_dir)).resolve()
+        return _anchor(os.getenv("WM_CACHE_DIR", self.data.cache_dir))
 
     @property
     def db_path(self) -> Path:
-        return Path(os.getenv("WM_DB_PATH", "./db/operations.db")).resolve()
+        default = Path("db") / "operations.db"
+        return _anchor(os.getenv("WM_DB_PATH", str(default)))
 
     @property
     def is_live(self) -> bool:
@@ -270,12 +271,22 @@ class Config(BaseModel):
 # ------------------------------------------------------------------ loading
 
 
+def _anchor(raw: str) -> Path:
+    """Resolve a relative path against the repo root, not the current directory.
+
+    Otherwise running from another directory silently creates a second,
+    empty database and cache next to wherever the shell happened to be.
+    """
+    p = Path(raw)
+    return (p if p.is_absolute() else REPO_ROOT / p).resolve()
+
+
 @lru_cache(maxsize=1)
 def load_config(path: str | Path | None = None) -> Config:
     """Load and validate config.yaml. Cached — call freely."""
     load_dotenv(REPO_ROOT / ".env")
     cfg_path = Path(path) if path else DEFAULT_CONFIG_PATH
-    with open(cfg_path) as fh:
+    with cfg_path.open(encoding="utf-8") as fh:
         raw = yaml.safe_load(fh)
     return Config(**raw)
 

@@ -7,8 +7,8 @@ before anything reaches the broker.
 > **Status: scaffold.** Config, database, price cache, pacing limiter and
 > broker interface are built and tested. Signals, risk engine, backtest and
 > IBKR calls are stubs with fixed contracts. Nothing has been backtested, so
-> nothing here is validated. See `STRATEGY_SPEC.md` for what it is supposed
-> to do and `STRATEGY_SPEC.md` section 13 for the criteria it must meet
+> nothing here is validated. See `docs/STRATEGY_SPEC.md` for what it is supposed
+> to do and `docs/STRATEGY_SPEC.md` section 13 for the criteria it must meet
 > before a single dollar moves.
 >
 > Not investment advice. A backtest is a hypothesis about the past.
@@ -27,7 +27,7 @@ That asymmetry is deliberate: risk control responds fast, position-taking
 does not.
 
 Full rules, rationale, known weaknesses and acceptance criteria:
-**`STRATEGY_SPEC.md`**. Every parameter: **`config.yaml`**.
+**`docs/STRATEGY_SPEC.md`**. Every parameter: **`config.yaml`**.
 
 ---
 
@@ -252,7 +252,8 @@ SELECT 5 - COUNT(*) AS remaining FROM parameter_changes;
 
 ```
 weekly-momentum/
-├── STRATEGY_SPEC.md         the rules and why — read this first
+├── docs/
+│   └── STRATEGY_SPEC.md     the rules and why — read this first
 ├── config.yaml              every parameter
 ├── Makefile                 all commands
 ├── db/schema.sql            13 tables, 4 views
