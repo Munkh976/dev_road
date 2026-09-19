@@ -1,0 +1,96 @@
+{
+  "title": "weekly_momentum_v1 — operations",
+  "description": "Trade proposals, approvals, orders and audit trail. Positions and balances are NOT here: those are read live from IBKR.",
+  "databases": {
+    "operations": {
+      "tables": {
+        "proposals": {
+          "description": "What the strategy wants to do. A proposal is not an order.",
+          "sort_desc": "created_at"
+        },
+        "approvals": {
+          "description": "Append-only record of your decisions. The override column is the one to watch.",
+          "sort_desc": "decided_at"
+        },
+        "orders": {
+          "description": "Broker lifecycle. broker_order_id is IBKR's; IBKR is the source of truth.",
+          "sort_desc": "submitted_at"
+        },
+        "signals": {
+          "description": "One row per symbol per run. Reproducible from the parquet cache.",
+          "sort": "rank"
+        },
+        "runs": {
+          "description": "Audit spine. config_hash pins the exact parameters each run used.",
+          "sort_desc": "started_at"
+        },
+        "journal": {
+          "description": "Your weekly notes. The 15 minutes that decides whether this works.",
+          "sort_desc": "week_of"
+        },
+        "parameter_changes": {
+          "description": "The 5-change budget from spec section 12. Once exhausted, the spec is frozen.",
+          "sort_desc": "changed_at"
+        },
+        "system_state": {
+          "description": "Kill switch. trading_enabled = 0 means no orders are built, full stop."
+        },
+        "position_state": {
+          "description": "The one thing IBKR cannot tell us: highest close since entry, for the trailing stop."
+        }
+      },
+      "queries": {
+        "weekly_review": {
+          "title": "Weekly review — everything awaiting your decision",
+          "description": "Start here every Saturday. Exits first, then entries.",
+          "sql": "SELECT action, symbol, reason, rank, qty, ref_price, est_value, risk_status, ai_veto, reason_detail, proposal_id FROM v_pending_approval ORDER BY CASE action WHEN 'SELL' THEN 0 ELSE 1 END, rank"
+        },
+        "top_ranked": {
+          "title": "Current rankings",
+          "description": "Latest signal run. Rank 1-6 are entry candidates; above 10 triggers an exit.",
+          "sql": "SELECT rank, symbol, sector, close, momentum, vol, score, atr, regime FROM v_current_signals LIMIT 30"
+        },
+        "adherence": {
+          "title": "Adherence — are you following your own system?",
+          "description": "Three consecutive weeks of overrides is a kill criterion (spec section 14).",
+          "sql": "SELECT strftime('%Y-W%W', a.decided_at) AS week, COUNT(*) AS decisions, SUM(a.override) AS overrides, ROUND(100.0 * SUM(a.override) / COUNT(*), 1) AS override_pct FROM approvals a GROUP BY week ORDER BY week DESC LIMIT 26"
+        },
+        "overrides": {
+          "title": "Override log",
+          "description": "Every time you went against the system, and why.",
+          "sql": "SELECT decided_at, symbol, action, reason, decision, override_reason, est_value FROM v_override_log LIMIT 100"
+        },
+        "drawdown": {
+          "title": "Equity and drawdown",
+          "description": "Halt triggers at 20% drawdown and requires a manual restart.",
+          "sql": "SELECT as_of, ROUND(net_liquidation, 2) AS net_liq, ROUND(cash, 2) AS cash, n_positions, ROUND(100.0 * drawdown, 2) AS drawdown_pct, CASE WHEN drawdown >= 0.20 THEN 'HALT' WHEN drawdown >= 0.15 THEN 'WARN' ELSE 'ok' END AS status FROM equity_curve ORDER BY as_of DESC LIMIT 60"
+        },
+        "run_health": {
+          "title": "Run health",
+          "description": "Did the pipeline run, did the data gate pass, what came out.",
+          "sql": "SELECT started_at, run_type, status, data_gate, data_coverage, staleness_days, n_proposals, n_orders, halt_reason FROM v_run_health LIMIT 40"
+        },
+        "open_orders": {
+          "title": "Orders not yet terminal",
+          "description": "Anything still in flight. Never assume a submitted order filled.",
+          "sql": "SELECT submitted_at, symbol, action, quantity, limit_price, status, filled_quantity, avg_fill_price, error FROM orders WHERE status NOT IN ('FILLED','CANCELLED','REJECTED','EXPIRED') ORDER BY submitted_at DESC"
+        },
+        "fills_vs_reference": {
+          "title": "Execution quality — fills vs reference price",
+          "description": "Slippage against the price the strategy assumed. Compare to the 5bps backtest assumption.",
+          "sql": "SELECT o.symbol, o.action, o.submitted_at, ROUND(p.reference_price, 2) AS ref_price, ROUND(o.avg_fill_price, 2) AS fill, ROUND(10000.0 * (o.avg_fill_price - p.reference_price) / p.reference_price * CASE o.action WHEN 'BUY' THEN 1 ELSE -1 END, 1) AS slippage_bps FROM orders o JOIN proposals p ON p.proposal_id = o.proposal_id WHERE o.status = 'FILLED' ORDER BY o.submitted_at DESC LIMIT 100"
+        },
+        "ai_veto_activity": {
+          "title": "AI veto layer — what it flagged",
+          "description": "Veto only. It cannot select or size anything.",
+          "sql": "SELECT reviewed_at, symbol, status, flag, severity, reasoning FROM ai_reviews WHERE flag = 1 OR status != 'ok' ORDER BY reviewed_at DESC LIMIT 50"
+        },
+        "parameter_budget": {
+          "title": "Parameter change budget",
+          "description": "5 changes total. Each one spends out-of-sample validity.",
+          "sql": "SELECT (SELECT COUNT(*) FROM parameter_changes) AS used, 5 AS budget, 5 - (SELECT COUNT(*) FROM parameter_changes) AS remaining"
+        }
+      }
+    }
+  }
+}

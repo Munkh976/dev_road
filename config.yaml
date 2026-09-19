@@ -1,0 +1,144 @@
+# weekly_momentum_v1 — machine-readable parameters
+# Companion to STRATEGY_SPEC.md. Every number here is justified there.
+# Code reads THIS file. No magic numbers anywhere else.
+
+strategy:
+  name: weekly_momentum_v1
+  version: 1.0.0
+  spec: STRATEGY_SPEC.md
+
+# ---------------------------------------------------------------- capital
+account:
+  capital: 15000
+  currency: USD
+  paper_trading: true          # MUST stay true until acceptance criteria pass
+  fractional_shares: true
+
+# ---------------------------------------------------------------- universe
+universe:
+  source: SP500
+  benchmark: SPY
+  min_dollar_volume_20d: 20000000
+  min_price: 10.00
+  min_days_listed: 400
+  security_types: [COMMON]
+  max_symbols: 150             # IBKR pacing: ~6 symbols/min -> ~25 min refresh
+
+# ---------------------------------------------------------------- data
+data:
+  cache_dir: ./data/cache
+  cache_format: parquet
+  history_years: 15
+  bar_size: "1 day"
+  what_to_show: ADJUSTED_LAST
+  min_bars_required: 300
+  ibkr_requests_per_minute: 6  # stay under 60 per 10 minutes
+  max_stale_days: 5            # exceed -> halt, generate no orders
+
+# ---------------------------------------------------------------- signals
+signals:
+  momentum:
+    skip_days: 21
+    lookback_short: 147        # ~6 months
+    lookback_long: 273         # ~12 months
+    weight_short: 0.5
+    weight_long: 0.5
+  volatility:
+    window: 63
+    annualize: 252
+    floor: 0.10                # score denominator floor
+  trend_filter:
+    symbol: SPY
+    ma_period: 200
+    ma_type: SMA
+  atr:
+    period: 20
+
+# ---------------------------------------------------------------- entry
+entry:
+  require_market_on: true
+  rank_threshold: 6
+  min_momentum: 0.0
+  max_volatility: 0.80
+  require_ai_veto_pass: true
+  max_new_per_rebalance: 2
+
+# ---------------------------------------------------------------- exit
+exit:
+  rank_exit: 10                # buffer vs entry rank 6 — prevents churn
+  exit_all_on_market_off: true
+  trailing_stop_atr: 3.0       # wide by design; see spec section 6
+  exit_on_negative_momentum: true
+
+# ---------------------------------------------------------------- sizing
+sizing:
+  method: inverse_volatility
+  max_position_weight: 0.20
+  min_position_weight: 0.08
+  target_portfolio_vol: 0.15
+  scale_up_allowed: false      # never lever to hit the vol target
+  min_position_value: 1000
+  covariance_window: 63
+
+# ---------------------------------------------------------------- schedule
+schedule:
+  timezone: America/New_York
+  data_refresh: "SAT 18:00"
+  exit_check: weekly
+  entry_check: monthly         # first Monday
+  execution_time: "MON 09:45"  # avoid the opening auction
+  drift_tolerance: 0.25
+
+# ---------------------------------------------------------------- risk
+risk:
+  max_gross_exposure: 1.00     # NO LEVERAGE
+  max_positions: 6
+  max_sector_weight: 0.40
+  max_orders_per_day: 8
+  max_order_value: 4000
+  halt_on_drawdown: 0.20
+  halt_on_broker_disconnect: true
+  require_manual_approval: true
+
+# ---------------------------------------------------------------- ai layer
+ai:
+  enabled: true
+  role: veto_only              # cannot signal, size, or order
+  on_failure: proceed_and_log  # an outage must not halt trading
+  flag_categories:
+    - pending_merger_acquisition
+    - accounting_investigation
+    - delisting_notice
+    - bankruptcy_filing
+    - fraud_allegation
+    - trading_halt
+
+# ---------------------------------------------------------------- execution
+execution:
+  order_type: LIMIT            # never a bare market order
+  limit_offset_pct: 0.003      # marketable limit
+  time_in_force: DAY
+  ibkr_host: 127.0.0.1
+  ibkr_port: 4002              # 4002 paper | 4001 live (IB Gateway)
+  client_id: 17
+
+# ---------------------------------------------------------------- backtest
+backtest:
+  start: "2007-01-01"
+  walk_forward:
+    in_sample_years: 3
+    out_of_sample_years: 1
+    step_months: 12
+  costs:
+    commission_per_share: 0.005
+    commission_min: 1.00
+    slippage_bps: 5
+    spread_bps: 3
+  parameter_change_budget: 5
+  acceptance:
+    beat_benchmark: true
+    max_drawdown: 0.35
+    worst_rolling_12m: -0.30
+    min_sharpe: 0.6
+    max_annual_turnover: 4.00
+    max_single_window_contribution: 0.50

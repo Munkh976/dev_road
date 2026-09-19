@@ -1,0 +1,15 @@
+# Normalize line endings so the repo behaves identically on Windows and Linux.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Binary — never touch
+*.parquet binary
+*.db      binary
+*.png     binary
+*.jpg     binary
+*.ico     binary
+*.gz      binary
