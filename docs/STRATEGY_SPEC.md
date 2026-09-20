@@ -4,7 +4,7 @@
 **Capital:** $15,000 (paper first)
 **Owner:** [you]
 **Created:** 2026-09-19
-**Version:** 1.0.0
+**Version:** 1.0.1
 
 > This document defines the strategy completely enough to backtest without
 > further decisions. If you find yourself making a judgment call while
@@ -67,6 +67,72 @@ CAP:     top 150 by 20-day average dollar volume
 **Benchmark ticker:** `SPY` (also used for the trend filter; always fetched
 regardless of universe membership).
 
+### 2.1 Where the constituent list comes from
+
+IBKR's API does not expose index membership, and the list is **never fetched
+at runtime**. It is a committed file, `data/universe/sp500_constituents.csv`,
+with columns `symbol, name, as_of_date`.
+
+- `scripts/update_constituents.py` is a manual, run-quarterly helper. It
+  builds the CSV from a source the owner reviews (via `git diff`) before
+  committing. Nothing in the refresh path calls it.
+- The CSV stores symbols as index lists write them (`BRK.B`). The loader
+  converts to IBKR form on read: `.` becomes a space (`BRK B`, `BF B`).
+  IBKR symbols are the only form used downstream (cache filenames, signals,
+  the snapshot table).
+- `refresh` **warns** when `as_of_date` is older than
+  `universe.constituents_max_age_days` (100). It warns; it does not halt. A
+  slightly stale membership list degrades selection quality, it does not make
+  orders unsafe.
+
+### 2.2 Two cadences: rebuilding the universe vs. refreshing it
+
+The dollar-volume filter needs price history, but the universe decides what
+gets fetched. Resolved by running at two speeds:
+
+| Cadence | What | Requests | Time at 6/min |
+|---|---|---|---|
+| **Quarterly** rebuild (`refresh --rebuild-universe`) | Refresh history for **all** ~500 constituents + SPY, request contract details for each, apply the filters above **from the cache**, save the chosen 150 with the date | ~500 | ~83 min |
+| **Weekly** refresh (`refresh`) | Refresh only the **saved** 150 + SPY | ~150 | ~25 min |
+
+Filter definitions, so they are not judgment calls at implementation time:
+
+- `avg_dollar_volume_20d` = mean of `close x volume x volume_multiplier`
+  over the last 20 cached bars (`universe.adv_window_days`). Fewer than 20
+  bars fails the filter.
+- `price` = last cached close.
+- `days_listed` = calendar days from the first cached bar to the last cached
+  bar. IBKR contract details carry no listing date; the first bar is the
+  proxy. History is capped at 15 years, so anything older reads as 15 years,
+  which is fine for a `>= 400` test.
+- `security_type` = IBKR `ContractDetails.stockType`. Keep `COMMON`; REIT,
+  ETF and ADR (and anything else) are dropped. A symbol with no contract
+  details is dropped (fail closed).
+- A symbol whose last bar is older than `data.max_stale_days` relative to
+  SPY's last bar is dropped: it is delisted, halted or failed to fetch, and
+  its dollar volume is not current.
+- Ranking is by `avg_dollar_volume_20d` descending, ties broken by symbol, so
+  a rebuild on identical inputs gives an identical list.
+- **Sector** for entry rule E8 is `ContractDetails.industry`, stored alongside
+  `category` and `subcategory`. It is captured at rebuild time and carried in
+  the snapshot.
+- Contract-detail requests are not historical-data requests and do not count
+  against the 60-per-10-minutes pacing cap.
+
+**Snapshot.** Each rebuild writes the chosen list to the SQLite table
+`universe_snapshots` (one row per symbol, keyed by `snapshot_date`, with rank,
+sector, dollar volume, price, and the `as_of_date` of the constituent list
+used). The backtest and the audit trail answer "which list was in force on
+date D" with the latest `snapshot_date <= D`. The weekly refresh reads the
+latest snapshot; it never recomputes the filters. If no snapshot exists the
+weekly refresh fails with an instruction to run a rebuild.
+
+**Volume units.** IBKR daily-bar volume for US stocks has historically been
+reported in round lots in some configurations. `data.volume_multiplier`
+(default 1, meaning shares) exists so a 100x unit error is a one-line config
+correction rather than a code change. A rebuild that selects zero symbols
+fails loudly; check SPY's computed dollar volume after the first rebuild.
+
 ---
 
 ## 3. Data
@@ -84,6 +150,40 @@ minimum per symbol (for signal computation).
 
 **Staleness gate:** if the most recent bar for SPY is more than 5 calendar
 days old, **halt — generate no orders.**
+
+### 3.1 Adjusted-price restatement
+
+`ADJUSTED_LAST` history is recalculated all the way back whenever a stock
+pays a dividend or splits. Appending new adjusted bars to old adjusted history
+leaves a jump at the join every time, and a split appears as a fake crash,
+which corrupts momentum, volatility and ATR.
+
+Rule: every incremental fetch overlaps the cache by `data.overlap_days` (5).
+Compare the overlapping closes to the cache. If **any** differs by more than
+`data.restatement_tolerance` (0.1%), discard the cached history for that
+symbol and replace it with a full-history fetch. If there is **no** overlap at
+all, the history cannot be verified, so it is refetched too (fail closed).
+
+- Pacing counts requests, not bars: a full refetch costs one extra request
+  for that symbol, however much history it returns.
+- Every refetch is logged with its reason; the count for the run appears in
+  the refresh summary and is stored in `data_quality.detail`. A week with many
+  refetches is normal around ex-dividend dates; a week where every symbol
+  refetches means something is wrong with the fetch, not the data.
+- A cache older than one year cannot be topped up with a day-denominated
+  request (IBKR rejects `N D` beyond a year), so it is refetched in full.
+- `ADJUSTED_LAST` requires an **empty** `endDateTime`; a dated end is
+  rejected. Every historical request therefore ends "now" and is sized by
+  duration alone.
+- Never forward-fill or patch a gap between old and new data. Restated
+  history replaces; it is not stitched.
+
+**Refresh order and errors.** SPY is fetched first, so the gate can be
+evaluated even if a run is interrupted. Each request acquires the pacing
+limiter. IBKR error 420 (and error 162 whose text is a pacing violation)
+puts the limiter into its ten-minute cooldown and the symbol is **not**
+retried in that run. A symbol that fails to fetch keeps its old cache and is
+counted stale by the gate.
 
 ---
 
@@ -287,6 +387,8 @@ Written down now so they are not discovered as surprises later.
 4. **Survivorship bias.** IBKR data has no point-in-time index membership and
    often lacks bars for delisted names, so the backtest will be optimistic by
    a meaningful and unmeasured amount.
+   The universe is built from **today's** S&P 500 membership (§2.1), so every
+   company that fell out of the index since 2007 is absent from the backtest.
 5. **Tax drag.** Monthly entries and weekly exits generate short-term capital
    gains in a taxable account. Post-tax returns will be materially below the
    backtest.
@@ -372,3 +474,4 @@ The third one is the one that will actually happen. Watch for it.
 | Version | Date | Change |
 |---|---|---|
 | 1.0.0 | 2026-09-19 | Initial specification, pre-backtest |
+| 1.0.1 | 2026-09-19 | Pre-backtest; spends no parameter budget. Settles three implementation gaps: (1) S&P 500 list is a committed CSV with a manual quarterly update script, warn-only staleness check, `BRK.B` -> `BRK B` mapping (§2.1); (2) universe is rebuilt quarterly from all constituents and saved as a queryable snapshot, weekly refresh fetches only the saved 150 + SPY, sector comes from IBKR contract details, filter definitions made explicit (§2.2); (3) adjusted-price restatement is detected by overlap comparison at 0.1% and answered with a full refetch, with `endDateTime` empty (§3.1). Adds config keys only: `universe.constituents_path`, `constituents_max_age_days`, `adv_window_days`, `data.overlap_days`, `restatement_tolerance`, `volume_multiplier`. No strategy parameter changed. |
