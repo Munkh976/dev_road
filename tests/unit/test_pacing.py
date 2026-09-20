@@ -7,7 +7,8 @@ import time
 
 import pytest
 
-from src.data.pacing import PacingLimiter
+from src.data.pacing import IBKR_COOLDOWN_SECONDS, PacingLimiter
+from tests.support import FakeClock
 
 
 def test_refuses_rate_above_ibkr_ceiling():
@@ -63,3 +64,25 @@ def test_estimate_matches_ibkr_reality():
     lim = PacingLimiter(requests_per_minute=6)
     assert lim.estimate_seconds(150) == pytest.approx(1500, rel=0.01)
     assert lim.estimate_seconds(500) / 60 == pytest.approx(83.3, rel=0.01)
+
+
+def test_cooldown_is_waited_out_on_the_injected_clock():
+    clock = FakeClock()
+    limiter = PacingLimiter(requests_per_minute=6, clock=clock, sleep=clock.sleep)
+    limiter.enter_cooldown()
+    assert limiter.in_cooldown
+    limiter.acquire()                                # returns immediately in real time
+    assert clock.slept >= IBKR_COOLDOWN_SECONDS
+    assert not limiter.in_cooldown
+
+
+def test_sustained_rate_never_exceeds_the_ceiling_on_the_injected_clock():
+    clock = FakeClock()
+    limiter = PacingLimiter(requests_per_minute=6, clock=clock, sleep=clock.sleep)
+    stamps = []
+    for _ in range(30):
+        limiter.acquire()
+        stamps.append(clock.now)
+    # No ten-minute window may contain more than 60 requests; at 6/min, 30
+    # requests must take at least ~4 minutes beyond the initial reserve.
+    assert stamps[-1] - stamps[0] >= 4 * 60

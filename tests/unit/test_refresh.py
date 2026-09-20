@@ -188,3 +188,74 @@ def test_injected_ib_is_not_disconnected(refresh_cfg, db):
     ib = FakeIB({"SPY": recent_bars(400), "AAA": recent_bars(400)})
     refresh(refresh_cfg, ib=ib, limiter=FakeLimiter())
     assert not ib.disconnected
+
+
+# ------------------------------------------------------------- smoke mode
+
+
+def test_smoke_prints_a_summary_and_writes_no_snapshot(refresh_cfg, db, capsys):
+    from src.data.refresh import smoke
+
+    ib = FakeIB({"SPY": recent_bars(400, price=500), "AAPL": recent_bars(300, volume=2e6)})
+    ib.details = {"SPY": details(stock_type="ETF", industry="Funds"),
+                  "AAPL": details(industry="Technology")}
+
+    assert smoke(["SPY", "AAPL"], refresh_cfg, ib=ib, limiter=FakeLimiter()) == EXIT_OK
+
+    out = capsys.readouterr().out
+    spy = next(line for line in out.splitlines() if line.startswith("SPY"))
+    aapl = next(line for line in out.splitlines() if line.startswith("AAPL"))
+    assert "400" in spy and "ETF / Funds" in spy
+    assert "300" in aapl and "COMMON / Technology" in aapl
+    assert str(recent_bars(300).index[0].date()) in aapl           # first date shown
+    assert str(recent_bars(300).index[-1].date()) in aapl          # last date shown
+    assert aapl.index(str(recent_bars(300).index[0].date())) < aapl.index(str(recent_bars(300).index[-1].date()))
+    adv = int(recent_bars(300, volume=2e6)["close"].iloc[-20:].mul(2e6).mean())
+    assert f"{adv:,}" in aapl or f"{adv + 1:,}" in aapl or f"{adv - 1:,}" in aapl
+    assert [s for s, _ in ib.requests] == ["SPY", "AAPL"]          # only what was asked for
+    assert db.execute("SELECT COUNT(*) FROM universe_snapshots").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM contract_info").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+
+
+def test_smoke_reports_a_failing_symbol_and_exits_nonzero(refresh_cfg, capsys):
+    from src.data.refresh import smoke
+
+    ib = FakeIB({"SPY": recent_bars(300)})
+    ib.errors["AAPL"] = [(354, "Requested market data is not subscribed")]
+    ib.details = {"SPY": details()}
+
+    assert smoke(["AAPL", "SPY"], refresh_cfg, ib=ib, limiter=FakeLimiter()) == EXIT_ERROR
+
+    out = capsys.readouterr().out
+    assert "FAILED" in out and "354" in out
+    assert any(line.startswith("SPY") and "FAILED" not in line for line in out.splitlines())
+
+
+def test_smoke_maps_share_class_symbols(refresh_cfg, capsys):
+    from src.data.refresh import smoke
+
+    ib = FakeIB({"BRK B": recent_bars(300)})
+    ib.details = {"BRK B": details()}
+    assert smoke(["BRK.B"], refresh_cfg, ib=ib, limiter=FakeLimiter()) == EXIT_OK
+    assert ib.requests[0][0] == "BRK B"
+
+
+def test_smoke_and_rebuild_cannot_be_combined():
+    from src.data.refresh import main
+
+    with pytest.raises(SystemExit):
+        main(["--symbols", "SPY", "--rebuild-universe"])
+
+
+# ---------------------------------------------------------- rebuild report
+
+
+def test_rebuild_prints_top_bottom_and_dropped_counts(refresh_cfg, db, capsys):
+    ib = rebuild_world(refresh_cfg)
+    refresh(refresh_cfg, ib=ib, limiter=FakeLimiter(), rebuild_universe=True)
+    out = capsys.readouterr().out
+    assert "Top 5 by dollar volume" in out and "Bottom 5 of the selection" in out
+    assert "AAA" in out and "BRK B" in out
+    dropped = out.split("Dropped by filter:")[1]
+    assert "stock_type" in dropped and "no_contract_info" in dropped   # ETFX and NOPE

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from src.data.pacing import PacingLimiter
+from src.data.pacing import IBKR_COOLDOWN_SECONDS, PacingLimiter
 from src.data.refresh import FetchError, PacingViolation, fetch_symbol
-from tests.support import FakeIB, FakeLimiter, recent_bars
+from tests.support import FakeClock, FakeIB, FakeLimiter, recent_bars
 
 PACING_MSG = "Historical Market Data Service error message: pacing violation"
 
@@ -46,6 +46,7 @@ def test_returns_dated_ohlcv_frame(refresh_cfg, setup):
 def test_pacing_error_cools_down_and_does_not_retry(refresh_cfg, setup, code, msg):
     ib, limiter, events = setup
     ib.errors["AAPL"] = [(code, msg)]
+    ib.max_requests = 1                        # a retry fails here, immediately
     with pytest.raises(PacingViolation):
         fetch_symbol(ib, "AAPL", "10 D", refresh_cfg, limiter)
     assert limiter.cooldowns == 1
@@ -53,13 +54,25 @@ def test_pacing_error_cools_down_and_does_not_retry(refresh_cfg, setup, code, ms
     assert len(ib.requests) == 1
 
 
-def test_pacing_error_engages_the_real_limiter(refresh_cfg):
+def test_pacing_error_engages_the_real_limiter_for_the_full_cooldown(refresh_cfg):
+    clock = FakeClock()
     ib = FakeIB({"AAPL": recent_bars(50)})
     ib.errors["AAPL"] = [(420, "pacing")]
-    limiter = PacingLimiter(requests_per_minute=refresh_cfg.data.ibkr_requests_per_minute)
+    ib.max_requests = 1
+    limiter = PacingLimiter(
+        requests_per_minute=refresh_cfg.data.ibkr_requests_per_minute,
+        clock=clock, sleep=clock.sleep,
+    )
     with pytest.raises(PacingViolation):
         fetch_symbol(ib, "AAPL", "10 D", refresh_cfg, limiter)
     assert limiter.in_cooldown
+    assert len(ib.requests) == 1                     # a retry would have made a second
+
+    # The next request waits out the whole cooldown -- in fake time, so instantly.
+    ib.errors.clear()
+    ib.max_requests = None
+    fetch_symbol(ib, "AAPL", "10 D", refresh_cfg, limiter)
+    assert clock.slept >= IBKR_COOLDOWN_SECONDS
 
 
 def test_other_error_is_a_fetch_error_without_cooldown(refresh_cfg, setup):

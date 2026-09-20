@@ -217,6 +217,19 @@ Do not skip ahead. Each step is useless without the previous one.
 - [x] **4. Broker interface** — abstraction fixed
 - [x] **5. `build_universe()`** — the S&P filter in `src/data/refresh.py`
 - [x] **6. IBKR fetch** — `fetch_symbol()`, tested against a mocked IB; first real `make refresh` still to do
+
+  First real run, in order (each step catches problems the next would repeat 100x):
+
+  ```
+  python scripts\update_constituents.py --write         # review git diff, commit
+  python -m src.data.refresh --symbols SPY,AAPL,MSFT    # ~1 min smoke test, no snapshot
+  python -m src.data.refresh --rebuild-universe         # ~83 min, quarterly
+  python -m src.data.refresh                            # ~25 min, weekly
+  ```
+
+  The smoke test prints bars, date range, last close, 20-day dollar volume,
+  stockType and industry per symbol. Check the dollar volume against what you
+  expect (wrong units shows up here) and that no symbol reports 354 or 162.
 - [ ] **7. Signals** — `src/strategy/signals.py`, with a look-ahead test
 - [ ] **8. Backtest** — walk-forward, out-of-sample only
 - [ ] **9. Acceptance gate** — A1–A6. **If A1 fails, stop and buy SPY.**

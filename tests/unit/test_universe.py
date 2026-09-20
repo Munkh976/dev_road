@@ -169,3 +169,23 @@ def test_missing_benchmark_is_an_error(refresh_cfg):
     write_constituents(refresh_cfg, [("AAA", "A")], date.today().isoformat())
     with pytest.raises(UniverseError, match="SPY"):
         build_universe(refresh_cfg)
+
+
+def test_report_shows_top_and_bottom_five_in_order_with_drop_counts():
+    import re
+
+    from src.data.universe import UniverseRow, UniverseSelection, format_universe_report
+
+    rows = [UniverseRow(f"S{i}", f"S{i}", "Tech", None, "COMMON", (20 - i) * 1e6, 50.0, 900, i)
+            for i in range(1, 9)]                                    # $19M ... $12M
+    text = format_universe_report(
+        UniverseSelection(rows, date(2026, 9, 18), {"price": 3, "stock_type": 41}), 500)
+    top, rest = text.split("Bottom 5 of the selection:")
+    bottom, dropped = rest.split("Dropped by filter:")
+
+    assert re.findall(r"S\d", top) == ["S1", "S2", "S3", "S4", "S5"]
+    assert re.findall(r"S\d", bottom) == ["S4", "S5", "S6", "S7", "S8"]
+    assert "19.0M/day" in top and "12.0M/day" in bottom
+    assert dropped.index("stock_type") < dropped.index("price")       # biggest first
+    assert re.search(r"stock_type\s+41", dropped) and re.search(r"price\s+3", dropped)
+    assert "8 chosen from 500" in text

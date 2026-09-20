@@ -4,3 +4,4 @@ freezegun>=1.5         # deterministic dates in signal tests
 ruff>=0.5
 mypy>=1.10
 pytest-asyncio>=0.23
+pytest-timeout>=2.3     # a hang fails in 30s instead of freezing the suite

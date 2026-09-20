@@ -43,6 +43,10 @@ from src.data.pacing import PacingLimiter
 from src.data.universe import (
     ContractInfo,
     UniverseError,
+    UniverseSelection,
+    avg_dollar_volume,
+    format_universe_report,
+    to_ibkr_symbol,
     load_constituents,
     load_contract_info,
     load_universe,
@@ -95,6 +99,10 @@ def build_universe(cfg: Config) -> list[str]:
     section 11 weakness 4. Point-in-time constituent data is the fix, and it
     costs money.
     """
+    return [r.symbol for r in _build_and_save(cfg).rows]
+
+
+def _build_and_save(cfg: Config) -> UniverseSelection:
     constituents = load_constituents(cfg)
     cache = PriceCache(cfg.cache_path)
     conn = open_db(cfg)
@@ -115,7 +123,8 @@ def build_universe(cfg: Config) -> list[str]:
         save_snapshot(conn, sel, date.today(), as_of)
     finally:
         conn.close()
-    return [r.symbol for r in sel.rows]
+    print(format_universe_report(sel, len(constituents)))
+    return sel
 
 
 # ------------------------------------------------------------------- fetching
@@ -191,6 +200,7 @@ class SymbolUpdate:
     symbol: str
     action: str            # full | incremental | refetch
     reason: str | None = None   # why a refetch happened
+    bars_fetched: int = 0       # bars in the last response (the full one, on a refetch)
 
 
 def _restatement_reason(
@@ -230,8 +240,9 @@ def update_symbol(
     existing = cache.read(symbol)
 
     if existing is None or existing.empty:
-        cache.write(symbol, fetch_symbol(ib, symbol, full, cfg, limiter))
-        return SymbolUpdate(symbol, "full")
+        bars = fetch_symbol(ib, symbol, full, cfg, limiter)
+        cache.write(symbol, bars)
+        return SymbolUpdate(symbol, "full", bars_fetched=len(bars))
 
     duration = next_fetch_duration(
         existing.index[-1].date(), cfg.data.history_years,
@@ -244,11 +255,12 @@ def update_symbol(
         reason = _restatement_reason(existing, fetched, cfg.data.restatement_tolerance)
         if reason is None:
             cache.merge(symbol, fetched)
-            return SymbolUpdate(symbol, "incremental")
+            return SymbolUpdate(symbol, "incremental", bars_fetched=len(fetched))
 
     log.warning("REFETCH %s: %s", symbol, reason)
-    cache.write(symbol, fetch_symbol(ib, symbol, full, cfg, limiter))
-    return SymbolUpdate(symbol, "refetch", reason)
+    bars = fetch_symbol(ib, symbol, full, cfg, limiter)
+    cache.write(symbol, bars)
+    return SymbolUpdate(symbol, "refetch", reason, len(bars))
 
 
 def fetch_contract_info(ib, symbol: str, cfg: Config) -> ContractInfo | None:
@@ -454,8 +466,8 @@ def refresh(
         if rebuild_universe:
             infos = [i for s in tickers if (i := fetch_contract_info(ib, s, cfg))]
             save_contract_info(conn, infos)
-            chosen = build_universe(cfg)
-            log.info("universe rebuilt: %d symbols saved", len(chosen))
+            chosen = _build_and_save(cfg)
+            log.info("universe rebuilt: %d symbols saved", len(chosen.rows))
 
         _finish_run(conn, run_id, "ok")
         return EXIT_OK
@@ -469,14 +481,69 @@ def refresh(
         conn.close()
 
 
+def smoke(
+    symbols: list[str], cfg: Config | None = None, *, ib=None,
+    limiter: PacingLimiter | None = None,
+) -> int:
+    """Fetch a few symbols and print what came back. Writes no snapshot.
+
+    For the first run against a real gateway: a permission error (354/162),
+    wrong volume units or an endDateTime problem shows up in a minute instead
+    of 83. Prices go through the normal cache path (including the restatement
+    check), so what you see is what a real refresh would store. Contract
+    details are printed, not saved; no DB is needed. Exit 1 if any symbol
+    failed.
+    """
+    cfg = cfg or load_config()
+    cache = PriceCache(cfg.cache_path)
+    limiter = limiter or PacingLimiter(requests_per_minute=cfg.data.ibkr_requests_per_minute)
+    symbols = [to_ibkr_symbol(s) for s in symbols]
+    owns_ib = ib is None
+    failures = 0
+    try:
+        if ib is None:
+            ib = _connect(cfg)
+        print(f"{'symbol':<8} {'action':<11} {'bars':>5} {'first':<11} {'last':<11} "
+              f"{'close':>10} {'avg$vol20d':>14}  stockType / industry")
+        for sym in symbols:
+            try:
+                res = update_symbol(ib, sym, cache, limiter, cfg)
+            except (FetchError, ValueError) as exc:
+                failures += 1
+                print(f"{sym:<8} FAILED      {exc}")
+                continue
+            df = cache.read(sym)
+            adv = avg_dollar_volume(df, cfg.universe.adv_window_days, cfg.data.volume_multiplier)
+            info = fetch_contract_info(ib, sym, cfg)
+            kind = f"{info.stock_type or '?'} / {info.sector or '?'}" if info else "no contract details"
+            print(f"{sym:<8} {res.action:<11} {res.bars_fetched:>5} {df.index[0].date()!s:<11} "
+                  f"{df.index[-1].date()!s:<11} {df['close'].iloc[-1]:>10,.2f} "
+                  f"{adv:>14,.0f}  {kind}")
+            if res.action == "refetch":
+                print(f"         refetched: {res.reason}")
+    finally:
+        if owns_ib and ib is not None:
+            ib.disconnect()
+    return EXIT_ERROR if failures else EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Refresh the price cache.")
     parser.add_argument(
         "--rebuild-universe", action="store_true",
         help="quarterly: refresh all constituents and re-select the universe",
     )
+    parser.add_argument(
+        "--symbols", type=lambda v: [x for x in v.split(",") if x.strip()],
+        help="smoke test: fetch only these symbols (e.g. SPY,AAPL,MSFT) and print "
+             "a summary; writes no universe snapshot",
+    )
     args = parser.parse_args(argv)
+    if args.symbols and args.rebuild_universe:
+        parser.error("--symbols and --rebuild-universe cannot be combined")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if args.symbols:
+        return smoke(args.symbols)
     try:
         return refresh(rebuild_universe=args.rebuild_universe)
     except UniverseError as exc:

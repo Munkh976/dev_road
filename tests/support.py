@@ -79,8 +79,11 @@ class FakeIB:
         self.requests: list[tuple[str, dict]] = []
         self.events = events if events is not None else []
         self.disconnected = False
+        self.max_requests: int | None = None    # fail fast on a runaway retry loop
 
     def reqHistoricalData(self, contract, **kw):
+        if self.max_requests is not None and len(self.requests) >= self.max_requests:
+            raise AssertionError(f"unexpected extra request for {contract.symbol} (retry?)")
         self.events.append("request")
         self.requests.append((contract.symbol, kw))
         for code, msg in self.info_errors:
@@ -121,3 +124,19 @@ def details(stock_type="COMMON", industry="Technology", category="Software",
         contract=SimpleNamespace(conId=con_id), stockType=stock_type,
         industry=industry, category=category, subcategory=subcategory, longName=name,
     )
+
+
+class FakeClock:
+    """Injectable clock for PacingLimiter: sleeping advances time instantly, so a
+    ten-minute cooldown costs zero real seconds."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+        self.slept = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept += seconds
+        self.now += seconds

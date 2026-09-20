@@ -27,6 +27,7 @@ import logging
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
@@ -51,10 +52,13 @@ class PacingLimiter:
     requests_per_minute: float = 6.0
     max_requests: int = IBKR_MAX_REQUESTS
     window_seconds: float = IBKR_WINDOW_SECONDS
+    # Injectable so tests can run a ten-minute cooldown in zero real time.
+    clock: Callable[[], float] = time.monotonic
+    sleep: Callable[[float], None] = time.sleep
 
     _timestamps: deque[float] = field(default_factory=deque, init=False)
     _tokens: float = field(default=0.0, init=False)
-    _last_refill: float = field(default_factory=time.monotonic, init=False)
+    _last_refill: float = field(default=0.0, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _cooldown_until: float = field(default=0.0, init=False)
 
@@ -67,6 +71,7 @@ class PacingLimiter:
         # Start with a partial reserve, not a full one: a full bucket at
         # startup would permit an immediate burst.
         self._tokens = 1.0
+        self._last_refill = self.clock()
         self._capacity = min(5.0, self.requests_per_minute)
 
     # ---------------------------------------------------------------- public
@@ -74,7 +79,7 @@ class PacingLimiter:
     def acquire(self, timeout: float | None = None) -> None:
         """Block until one request may be made. Raises TimeoutError if the
         wait would exceed `timeout` seconds."""
-        deadline = None if timeout is None else time.monotonic() + timeout
+        deadline = None if timeout is None else self.clock() + timeout
 
         while True:
             with self._lock:
@@ -83,12 +88,12 @@ class PacingLimiter:
                     self._consume()
                     return
 
-            if deadline is not None and time.monotonic() + wait > deadline:
+            if deadline is not None and self.clock() + wait > deadline:
                 raise TimeoutError(
                     f"pacing wait of {wait:.1f}s would exceed timeout {timeout}s"
                 )
             # Cap each sleep so a cooldown remains interruptible.
-            time.sleep(min(wait, 5.0))
+            self.sleep(min(wait, 5.0))
 
     def enter_cooldown(self, seconds: float = IBKR_COOLDOWN_SECONDS) -> None:
         """Call this when IBKR returns error 420 (pacing violation).
@@ -97,13 +102,13 @@ class PacingLimiter:
         immediately is what turns a cooldown into a disconnect.
         """
         with self._lock:
-            self._cooldown_until = time.monotonic() + seconds
+            self._cooldown_until = self.clock() + seconds
             log.warning("IBKR pacing violation — cooling down for %.0fs", seconds)
 
     @property
     def in_cooldown(self) -> bool:
         with self._lock:
-            return time.monotonic() < self._cooldown_until
+            return self.clock() < self._cooldown_until
 
     def estimate_seconds(self, n_requests: int) -> float:
         """How long `n_requests` will take at this rate. Use it to tell the
@@ -112,20 +117,20 @@ class PacingLimiter:
 
     def stats(self) -> dict[str, float | int]:
         with self._lock:
-            self._evict(time.monotonic())
+            self._evict(self.clock())
             return {
                 "requests_in_window": len(self._timestamps),
                 "window_capacity": self.max_requests,
                 "tokens_available": round(self._tokens, 2),
                 "cooldown_remaining": max(
-                    0.0, round(self._cooldown_until - time.monotonic(), 1)
+                    0.0, round(self._cooldown_until - self.clock(), 1)
                 ),
             }
 
     # --------------------------------------------------------------- private
 
     def _wait_needed(self) -> float:
-        now = time.monotonic()
+        now = self.clock()
 
         if now < self._cooldown_until:
             return self._cooldown_until - now
@@ -153,7 +158,7 @@ class PacingLimiter:
 
     def _consume(self) -> None:
         self._tokens -= 1.0
-        self._timestamps.append(time.monotonic())
+        self._timestamps.append(self.clock())
 
     def _evict(self, now: float) -> None:
         cutoff = now - self.window_seconds

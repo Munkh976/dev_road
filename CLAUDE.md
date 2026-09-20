@@ -81,7 +81,7 @@ exactly one place. `BrokerInterface` deliberately has no
 
 ## Current status
 
-**Built and tested (112 tests passing):**
+**Built and tested (120 tests passing):**
 
 - `src/config.py` — typed pydantic loader, safety validators
 - `db/schema.sql` — 15 tables, 4 views (adds `contract_info`, `universe_snapshots`)

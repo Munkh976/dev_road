@@ -145,6 +145,19 @@ def load_contract_info(conn: sqlite3.Connection) -> dict[str, ContractInfo]:
 
 # --------------------------------------------------------------- selection
 
+# How many symbols each end of the post-rebuild report shows.
+REPORT_EDGE_COUNT = 5
+
+
+def avg_dollar_volume(df, window: int, multiplier: float) -> float:
+    """Mean of close x volume over the last `window` bars, in dollars.
+
+    One definition, shared by the universe filter and the smoke report, so
+    the number you eyeball is the number the filter used.
+    """
+    tail = df.iloc[-window:]
+    return float((tail["close"] * tail["volume"]).mean()) * multiplier
+
 
 @dataclass(frozen=True)
 class UniverseRow:
@@ -212,8 +225,7 @@ def select_universe(
             drop("price")
             continue
 
-        tail = df.iloc[-window:]
-        adv = float((tail["close"] * tail["volume"]).mean()) * cfg.data.volume_multiplier
+        adv = avg_dollar_volume(df, window, cfg.data.volume_multiplier)
         if not adv >= u.min_dollar_volume_20d:
             drop("dollar_volume")
             continue
@@ -299,3 +311,25 @@ def load_universe(conn: sqlite3.Connection, as_of: date | None = None) -> list[s
         )
     ]
 
+
+
+def format_universe_report(sel: UniverseSelection, n_constituents: int) -> str:
+    """Top and bottom of the chosen list, and what each filter removed.
+
+    Printed after a rebuild so a broken input (wrong volume units, a bad
+    sector feed) is visible at a glance instead of buried in a snapshot table.
+    """
+    def line(r: UniverseRow) -> str:
+        return (f"  {r.rank:>3}  {r.symbol:<8} ${r.avg_dollar_volume_20d / 1e6:>10,.1f}M/day"
+                f"  {r.sector or '-'}")
+
+    edge = REPORT_EDGE_COUNT
+    out = [f"Universe: {len(sel.rows)} chosen from {n_constituents} constituents "
+           f"(data as of {sel.data_as_of})", "", f"Top {edge} by dollar volume:"]
+    out += [line(r) for r in sel.rows[:edge]]
+    out += ["", f"Bottom {edge} of the selection:"]
+    out += [line(r) for r in sel.rows[-edge:]]
+    out += ["", "Dropped by filter:"]
+    out += [f"  {reason:<18} {count}" for reason, count in
+            sorted(sel.dropped.items(), key=lambda kv: -kv[1])] or ["  (none)"]
+    return "\n".join(out)
