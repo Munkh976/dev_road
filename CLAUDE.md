@@ -81,7 +81,7 @@ exactly one place. `BrokerInterface` deliberately has no
 
 ## Current status
 
-**Built and tested (120 tests passing):**
+**Built and tested (205 tests passing):**
 
 - `src/config.py` — typed pydantic loader, safety validators
 - `db/schema.sql` — 15 tables, 4 views (adds `contract_info`, `universe_snapshots`)
@@ -92,9 +92,15 @@ exactly one place. `BrokerInterface` deliberately has no
   filters, `universe_snapshots` read/write
 - `src/data/refresh.py` — `build_universe()`, `fetch_symbol()`, `update_symbol()`
   (overlap-based restatement check, full refetch), weekly and
-  `--rebuild-universe` refresh, data gate. Tested against a mocked IB; needs no
-  gateway. **Not yet run against a real IB Gateway.**
+  `--rebuild-universe` and `--backfill` refresh, data gate. Tested against a
+  mocked IB; needs no gateway. Run against a real gateway: one full universe
+  rebuild (504/504) and a SPY backfill to 2004.
 - `scripts/update_constituents.py` — manual quarterly helper; dry run by default
+- `src/strategy/signals.py` — momentum, volatility, ATR, regime over the full
+  panel; `compute()` cuts at `as_of`. Look-ahead tested per signal.
+- `src/strategy/run_signals.py` — cache -> `signals` table + `runs` row; halts
+  on a stale SPY. Run against the real cache once.
+- `src/runlog.py` — shared `runs` row start/finish with the config hash
 - `src/execution/broker.py` — interface and dataclasses
 - `datasette/metadata.json` — 10 canned queries, all verified against schema
 - `datasette/plugins/approval.py` — approve/reject/halt/journal routes; atomic
@@ -104,7 +110,6 @@ exactly one place. `BrokerInterface` deliberately has no
 
 **Stubs — signatures and docstrings fixed, bodies raise `NotImplementedError`:**
 
-- `src/strategy/signals.py` — momentum, volatility, ATR, regime
 - `src/strategy/rules.py` — E1–E9, X1–X4, sizing
 - `src/risk/engine.py` — 14 checks
 - `src/ai/veto.py` — prompt and schema written, call not wired
@@ -127,8 +132,8 @@ Each step is useless without the one before it.
 4. ~~Broker interface~~ ✅
 5. ~~`build_universe()`~~ ✅
 6. ~~IBKR fetch~~ ✅ (mocked; first real run is a manual step)
-7. **Signals** — with an explicit look-ahead test ← next
-8. **Backtest** — walk-forward, out-of-sample only
+7. ~~Signals~~ ✅ (explicit look-ahead tests)
+8. **Backtest** — walk-forward, out-of-sample only ← next
 9. **Acceptance gate (A1–A6)** — **if A1 fails, stop and buy SPY**
 10. Rules + sizing
 11. Risk engine

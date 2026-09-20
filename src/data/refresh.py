@@ -26,20 +26,19 @@ in exactly one place.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import logging
 import sqlite3
-import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
 import pandas as pd
 from ib_async import Stock
 
-from src.config import DEFAULT_CONFIG_PATH, Config, load_config
+from src.config import Config, load_config
 from src.data.cache import PriceCache, next_fetch_duration
 from src.data.pacing import PacingLimiter
+from src.runlog import finish_run, start_run
 from src.data.universe import (
     ContractInfo,
     UniverseError,
@@ -346,32 +345,6 @@ def _update_all(
     return summary
 
 
-def _start_run(conn: sqlite3.Connection, cfg: Config, notes: str) -> str:
-    run_id = str(uuid.uuid4())
-    with conn:
-        conn.execute(
-            """INSERT INTO runs (run_id, started_at, run_type, strategy_name,
-               strategy_version, config_hash, mode, status, notes)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (run_id, datetime.now(timezone.utc).isoformat(), "refresh",
-             cfg.strategy.name, cfg.strategy.version,
-             hashlib.sha256(DEFAULT_CONFIG_PATH.read_bytes()).hexdigest(),
-             "paper" if cfg.account.paper_trading else "live", "running", notes),
-        )
-    return run_id
-
-
-def _finish_run(
-    conn: sqlite3.Connection, run_id: str, status: str,
-    halt_reason: str | None = None, error: str | None = None,
-) -> None:
-    with conn:
-        conn.execute(
-            "UPDATE runs SET finished_at=?, status=?, halt_reason=?, error=? WHERE run_id=?",
-            (datetime.now(timezone.utc).isoformat(), status, halt_reason, error, run_id),
-        )
-
-
 def _data_gate(
     conn: sqlite3.Connection, run_id: str, cache: PriceCache, symbols: list[str],
     summary: RefreshSummary, cfg: Config,
@@ -446,7 +419,10 @@ def refresh(
     bench = cfg.universe.benchmark
 
     conn = open_db(cfg)
-    run_id = _start_run(conn, cfg, "universe rebuild" if rebuild_universe else "backfill" if backfill else "weekly")
+    run_id = start_run(
+        conn, cfg, "refresh",
+        "universe rebuild" if rebuild_universe else "backfill" if backfill else "weekly",
+    )
     owns_ib = ib is None
     try:
         if rebuild_universe:
@@ -476,7 +452,7 @@ def refresh(
 
         if not passed:
             log.error("DATA GATE FAILED: %s. Halting; no orders.", halt_reason)
-            _finish_run(conn, run_id, "halted", halt_reason=halt_reason)
+            finish_run(conn, run_id, "halted", halt_reason=halt_reason)
             return EXIT_HALTED
 
         if rebuild_universe:
@@ -485,11 +461,11 @@ def refresh(
             chosen = _build_and_save(cfg)
             log.info("universe rebuilt: %d symbols saved", len(chosen.rows))
 
-        _finish_run(conn, run_id, "ok")
+        finish_run(conn, run_id, "ok")
         return EXIT_OK
     except Exception as exc:  # noqa: BLE001 - record the failure, then report it
         log.exception("refresh failed")
-        _finish_run(conn, run_id, "failed", error=f"{type(exc).__name__}: {exc}")
+        finish_run(conn, run_id, "failed", error=f"{type(exc).__name__}: {exc}")
         return EXIT_ERROR
     finally:
         if owns_ib and ib is not None:
