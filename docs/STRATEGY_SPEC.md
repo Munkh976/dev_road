@@ -150,8 +150,8 @@ fails loudly; check SPY's computed dollar volume after the first rebuild.
 | Positions | IBKR live | Each run |
 | News (AI veto layer only) | Any provider | Each run, held names + candidates |
 
-**History required:** 15 years minimum (for backtest), 300 trading days
-minimum per symbol (for signal computation).
+**History required:** `data.history_years` = **22** (data from ~2004), and 300
+trading days minimum per symbol (for signal computation). See §3.2 for why 22.
 
 **Staleness gate:** if the most recent bar for SPY is more than 5 calendar
 days old, **halt — generate no orders.**
@@ -189,6 +189,33 @@ limiter. IBKR error 420 (and error 162 whose text is a pacing violation)
 puts the limiter into its ten-minute cooldown and the symbol is **not**
 retried in that run. A symbol that fails to fetch keeps its old cache and is
 counted stale by the gate.
+
+### 3.2 Why 22 years of history
+
+§12 requires 2008 among the tested years, but 15 years of history starts in
+2011-09. Signals need ~13 months of warm-up (`lookback_long` 273 bars plus the
+skip), and the walk-forward needs a 3-year in-sample window before the first
+out-of-sample year, so the first tested year would begin around 2016: the 2008
+crash and the 2009 momentum crash (§11 weakness 1) would never be tested.
+
+With 22 years the data starts 2004-09 (confirmed: IBKR served SPY from
+2004-09-27), warm-up ends ~2005-10, and the first out-of-sample year begins
+~2008-10. That covers the Q4-2008 crash and the March-May 2009 rebound. It does
+**not** cover January-September 2008; that would need history from ~2002.
+
+**Trade-off.** Survivorship bias (§11 weakness 4) grows the further back the
+universe reaches: today's constituents are, by construction, the ones that
+survived and grew. Early years will be flattered. The SPY trend filter, which is
+what matters most in 2008, has no survivorship bias: SPY is one continuous
+series. Read early-window results with that in mind; the stock-selection part is
+optimistic, the regime part is not.
+
+**Backfill.** Incremental fetches only extend forwards, so raising
+`history_years` does not add older bars to an existing cache. `refresh
+--backfill` does a full refetch at the configured `history_years` for the saved
+universe plus SPY (~150 requests, ~25 min), replacing each cache file (never
+stitching, §3.1). `refresh --symbols SPY --backfill` does it for SPY alone as a
+smoke test.
 
 ---
 
@@ -480,4 +507,4 @@ The third one is the one that will actually happen. Watch for it.
 |---|---|---|
 | 1.0.0 | 2026-09-19 | Initial specification, pre-backtest |
 | 1.0.1 | 2026-09-19 | Pre-backtest; spends no parameter budget. Settles three implementation gaps: (1) S&P 500 list is a committed CSV with a manual quarterly update script, warn-only staleness check, `BRK.B` -> `BRK B` mapping (§2.1); (2) universe is rebuilt quarterly from all constituents and saved as a queryable snapshot, weekly refresh fetches only the saved 150 + SPY, sector comes from IBKR contract details, filter definitions made explicit (§2.2); (3) adjusted-price restatement is detected by overlap comparison at 0.1% and answered with a full refetch, with `endDateTime` empty (§3.1). Adds config keys only: `universe.constituents_path`, `constituents_max_age_days`, `adv_window_days`, `data.overlap_days`, `restatement_tolerance`, `volume_multiplier`. No strategy parameter changed. |
-| 1.0.2 | 2026-09-20 | Pre-backtest; spends no parameter budget. Clarifies that `days_listed` counts calendar days, not bars (§2.2). |
+| 1.0.2 | 2026-09-20 | Pre-backtest; spends no parameter budget. (1) `days_listed` counts calendar days, not bars (§2.2). (2) `data.history_years` 15 -> 22 so the backtest can reach the 2008-09 crash, with the survivorship-bias trade-off recorded, and `refresh --backfill` added to refetch existing caches at the new depth (§3.2). This is a data-coverage change, not a strategy parameter. |

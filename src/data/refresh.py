@@ -8,8 +8,8 @@ Two cadences (spec section 2.2):
                 constituent, fetch contract details, apply the section 2
                 filters from the cache, save the chosen 150
 
-Full history is fetched once (~15 years); every run after that pulls only the
-missing bars plus a small overlap. The overlap doubles as the restatement
+Full history is fetched once (`data.history_years`); every run after that pulls
+only the missing bars plus a small overlap. The overlap doubles as the restatement
 check (spec section 3.1): if adjusted closes we already hold have moved, the
 symbol's history is thrown away and refetched, because stitching restated
 history onto old history leaves a jump at the join.
@@ -198,7 +198,7 @@ def fetch_symbol(
 @dataclass
 class SymbolUpdate:
     symbol: str
-    action: str            # full | incremental | refetch
+    action: str            # full | incremental | refetch | backfill
     reason: str | None = None   # why a refetch happened
     bars_fetched: int = 0       # bars in the last response (the full one, on a refetch)
 
@@ -226,7 +226,8 @@ def _restatement_reason(
 
 
 def update_symbol(
-    ib, symbol: str, cache: PriceCache, limiter: PacingLimiter, cfg: Config
+    ib, symbol: str, cache: PriceCache, limiter: PacingLimiter, cfg: Config,
+    *, backfill: bool = False,
 ) -> SymbolUpdate:
     """Bring one symbol's cache up to date.
 
@@ -235,9 +236,19 @@ def update_symbol(
     cached history and refetch in full (one extra request; pacing counts
     requests, not bars). If the full refetch fails, the old cache is left as
     it was.
+
+    `backfill=True` skips the incremental path and refetches in full. Needed
+    after raising `data.history_years`: incremental fetches only extend
+    forwards, so older history is never added by a normal refresh. The write
+    replaces the cache rather than stitching onto it (spec section 3.1).
     """
     full = next_fetch_duration(None, cfg.data.history_years)
     existing = cache.read(symbol)
+
+    if backfill:
+        bars = fetch_symbol(ib, symbol, full, cfg, limiter)
+        cache.write(symbol, bars)
+        return SymbolUpdate(symbol, "backfill", f"backfill to {full}", len(bars))
 
     if existing is None or existing.empty:
         bars = fetch_symbol(ib, symbol, full, cfg, limiter)
@@ -311,12 +322,13 @@ class RefreshSummary:
 
 
 def _update_all(
-    ib, symbols: list[str], cache: PriceCache, limiter: PacingLimiter, cfg: Config
+    ib, symbols: list[str], cache: PriceCache, limiter: PacingLimiter, cfg: Config,
+    *, backfill: bool = False,
 ) -> RefreshSummary:
     summary = RefreshSummary(symbols_expected=len(symbols))
     for i, sym in enumerate(symbols, start=1):
         try:
-            res = update_symbol(ib, sym, cache, limiter, cfg)
+            res = update_symbol(ib, sym, cache, limiter, cfg, backfill=backfill)
         except PacingViolation as exc:
             # Not retried. The limiter now blocks the next symbol for ten minutes.
             summary.pacing_violations += 1
@@ -417,9 +429,13 @@ def refresh(
     ib=None,
     limiter: PacingLimiter | None = None,
     rebuild_universe: bool = False,
+    backfill: bool = False,
 ) -> int:
     """Update the cache. Returns a process exit code (0 ok, 1 error, 2 halted
     by the data gate).
+
+    `backfill` refetches the saved universe + SPY in full at the configured
+    history_years. It does not rebuild the universe.
 
     `ib` and `limiter` are injectable so the flow can be tested without a
     gateway.
@@ -430,7 +446,7 @@ def refresh(
     bench = cfg.universe.benchmark
 
     conn = open_db(cfg)
-    run_id = _start_run(conn, cfg, "universe rebuild" if rebuild_universe else "weekly")
+    run_id = _start_run(conn, cfg, "universe rebuild" if rebuild_universe else "backfill" if backfill else "weekly")
     owns_ib = ib is None
     try:
         if rebuild_universe:
@@ -446,7 +462,7 @@ def refresh(
 
         if ib is None:
             ib = _connect(cfg)
-        summary = _update_all(ib, symbols, cache, limiter, cfg)
+        summary = _update_all(ib, symbols, cache, limiter, cfg, backfill=backfill)
         passed, halt_reason = _data_gate(conn, run_id, cache, symbols, summary, cfg)
 
         log.info(
@@ -483,7 +499,7 @@ def refresh(
 
 def smoke(
     symbols: list[str], cfg: Config | None = None, *, ib=None,
-    limiter: PacingLimiter | None = None,
+    limiter: PacingLimiter | None = None, backfill: bool = False,
 ) -> int:
     """Fetch a few symbols and print what came back. Writes no snapshot.
 
@@ -507,7 +523,7 @@ def smoke(
               f"{'close':>10} {'avg$vol20d':>14}  stockType / industry")
         for sym in symbols:
             try:
-                res = update_symbol(ib, sym, cache, limiter, cfg)
+                res = update_symbol(ib, sym, cache, limiter, cfg, backfill=backfill)
             except (FetchError, ValueError) as exc:
                 failures += 1
                 print(f"{sym:<8} FAILED      {exc}")
@@ -534,6 +550,12 @@ def main(argv: list[str] | None = None) -> int:
         help="quarterly: refresh all constituents and re-select the universe",
     )
     parser.add_argument(
+        "--backfill", action="store_true",
+        help="full refetch at data.history_years for the saved universe + SPY "
+             "(or only --symbols). Use after raising history_years: incremental "
+             "fetches only extend forwards",
+    )
+    parser.add_argument(
         "--symbols", type=lambda v: [x for x in v.split(",") if x.strip()],
         help="smoke test: fetch only these symbols (e.g. SPY,AAPL,MSFT) and print "
              "a summary; writes no universe snapshot",
@@ -541,11 +563,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.symbols and args.rebuild_universe:
         parser.error("--symbols and --rebuild-universe cannot be combined")
+    if args.backfill and args.rebuild_universe:
+        parser.error("--backfill and --rebuild-universe cannot be combined; "
+                     "a rebuild refreshes incrementally")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.symbols:
-        return smoke(args.symbols)
+        return smoke(args.symbols, backfill=args.backfill)
     try:
-        return refresh(rebuild_universe=args.rebuild_universe)
+        return refresh(rebuild_universe=args.rebuild_universe, backfill=args.backfill)
     except UniverseError as exc:
         log.error("%s", exc)
         return EXIT_ERROR

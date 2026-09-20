@@ -31,7 +31,7 @@ universe:
 data:
   cache_dir: ./data/cache
   cache_format: parquet
-  history_years: 15
+  history_years: 22          # 22 -> data from ~2004 so 2008 is testable (spec 1.0.2)
   bar_size: "1 day"
   what_to_show: ADJUSTED_LAST
   min_bars_required: 300
