@@ -15,6 +15,9 @@ Safety properties worth keeping if you refactor this:
   * A proposal whose risk_status is REJECT cannot be approved at all. The
     risk engine is not advisory. This is enforced in the write's WHERE clause,
     not only in a pre-check, so a stale read cannot slip past it.
+  * Cross-site POSTs are refused (403) on every route. Datasette's own CSRF
+    check only applies to requests that carry cookies, and there is no login,
+    so without this any web page open in the browser could POST to localhost.
   * Every decision is one transaction (status flip + approval row). Datasette
     0.65 does not open a transaction for execute_write_fn, so the write
     functions below use `with conn:` to get commit/rollback.
@@ -22,12 +25,52 @@ Safety properties worth keeping if you refactor this:
 
 from __future__ import annotations
 
-import json
-import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
+
+from datasette.utils.asgi import Forbidden, Response
 
 from datasette import hookimpl
-from datasette.utils.asgi import Forbidden, Response
+
+# Sec-Fetch-Site values that mean the user's own browser initiated the request
+# from this origin (or directly, e.g. the address bar). Page scripts cannot
+# forge this header; "same-site" (another localhost port) and "cross-site" are
+# both refused.
+_TRUSTED_FETCH_SITE = {"same-origin", "none"}
+
+
+def _is_same_origin(request) -> bool:
+    """True unless a browser-supplied header says this came from elsewhere.
+
+    Non-browser clients (curl, scripts) send neither header and are allowed:
+    the threat here is other web pages, not other programs on the machine.
+    Both headers are checked when present, so one cannot vouch for the other.
+    """
+    fetch_site = request.headers.get("sec-fetch-site")
+    if fetch_site is not None and fetch_site.lower() not in _TRUSTED_FETCH_SITE:
+        return False
+    origin = request.headers.get("origin")
+    if origin is None:
+        return True
+    host = request.headers.get("host", "")
+    # Origin "null" (sandboxed frames, some redirects) parses to an empty
+    # netloc and fails this comparison, which is the safe outcome.
+    return urlsplit(origin).netloc.lower() == host.lower()
+
+
+def same_origin_only(handler):
+    """Wrap a route handler so cross-site requests get 403 before any logic."""
+
+    async def guarded(request, datasette):
+        if not _is_same_origin(request):
+            return Response.json(
+                {"error": "cross-site request refused"}, status=403
+            )
+        return await handler(request, datasette)
+
+    guarded.__name__ = handler.__name__
+    guarded.__doc__ = handler.__doc__
+    return guarded
 
 
 class _AlreadyDecided(Exception):
@@ -244,8 +287,8 @@ async def journal_entry(request, datasette):
 @hookimpl
 def register_routes():
     return [
-        (r"^/-/approve$", approve_proposal),
-        (r"^/-/approve-all$", approve_all),
-        (r"^/-/halt$", halt_system),
-        (r"^/-/journal$", journal_entry),
+        (r"^/-/approve$", same_origin_only(approve_proposal)),
+        (r"^/-/approve-all$", same_origin_only(approve_all)),
+        (r"^/-/halt$", same_origin_only(halt_system)),
+        (r"^/-/journal$", same_origin_only(journal_entry)),
     ]

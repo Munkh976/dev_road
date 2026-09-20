@@ -34,6 +34,10 @@ def _build_db(path: Path) -> None:
                        'h', 'paper', 'ok')""",
             [RUN_ID],
         )
+        conn.execute(
+            """INSERT INTO system_state (id, trading_enabled, updated_at)
+               VALUES (1, 1, '2026-01-01T00:00:00+00:00')"""
+        )
         conn.commit()
     finally:
         conn.close()
@@ -94,7 +98,7 @@ async def ds(db_path: Path):
 async def _post(ds: Datasette, route: str, data: dict):
     # Datasette's CSRF middleware stays on, but asgi-csrf only enforces it on
     # requests that carry cookies, so a cookie-less form post gets through.
-    # CSRF itself is Datasette's code and is not what these tests exercise.
+    # Cross-site protection is our own guard; see the tests at the bottom.
     return await ds.client.post(route, data=data)
 
 
@@ -168,3 +172,72 @@ async def test_override_without_reason_is_400_and_writes_nothing(ds, db_path):
     assert resp.status_code == 400
     assert _status(db_path, "p1") == "PENDING_APPROVAL"
     assert _n_approvals(db_path) == 0
+
+
+# --- cross-site POST protection -------------------------------------------
+# Datasette's CSRF check only applies to cookie-bearing requests, and there is
+# no login, so without our own guard any web page open in the browser could
+# POST to localhost. Browsers attach Origin / Sec-Fetch-Site to such requests
+# and page scripts cannot forge them.
+
+EVIL = {"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"}
+ROUTE_BODIES = {
+    "/-/approve": {"proposal_id": "p1", "decision": "APPROVE"},
+    "/-/approve-all": {},
+    "/-/halt": {"reason": "x"},
+    "/-/journal": {"entry": "x"},
+}
+
+
+def _writes(path: Path) -> tuple:
+    return (
+        _q(path, "SELECT status FROM proposals ORDER BY proposal_id"),
+        _n_approvals(path),
+        _q(path, "SELECT trading_enabled FROM system_state"),
+        _q(path, "SELECT COUNT(*) FROM journal"),
+    )
+
+
+@pytest.mark.parametrize("route", list(ROUTE_BODIES))
+async def test_cross_site_post_is_403_and_writes_nothing(ds, db_path, route):
+    _add_proposal(db_path, "p1")
+    before = _writes(db_path)
+    resp = await ds.client.post(route, data=ROUTE_BODIES[route], headers=EVIL)
+    assert resp.status_code == 403
+    assert _writes(db_path) == before
+
+
+async def test_cross_origin_header_alone_is_403(ds, db_path):
+    # Older browsers omit Sec-Fetch-Site; a foreign Origin must still fail.
+    _add_proposal(db_path, "p1")
+    resp = await ds.client.post(
+        "/-/approve-all", data={}, headers={"Origin": "https://evil.example"}
+    )
+    assert resp.status_code == 403
+    assert _status(db_path, "p1") == "PENDING_APPROVAL"
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},  # curl / scripts: no browser headers at all
+        {"Sec-Fetch-Site": "same-origin", "Origin": "http://localhost"},
+        {"Sec-Fetch-Site": "none"},  # user-initiated, e.g. address bar
+    ],
+)
+async def test_same_origin_post_still_works(ds, db_path, headers):
+    _add_proposal(db_path, "p1")
+    resp = await ds.client.post("/-/approve-all", data={}, headers=headers)
+    assert resp.status_code == 200
+    assert _status(db_path, "p1") == "APPROVED"
+
+
+async def test_same_site_but_cross_origin_is_403(ds, db_path):
+    # A different localhost port is "same-site" but not same-origin.
+    _add_proposal(db_path, "p1")
+    resp = await ds.client.post(
+        "/-/approve-all", data={},
+        headers={"Sec-Fetch-Site": "same-site", "Origin": "http://localhost:9999"},
+    )
+    assert resp.status_code == 403
+    assert _status(db_path, "p1") == "PENDING_APPROVAL"

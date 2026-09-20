@@ -82,18 +82,29 @@ return Response.html(html)
   SQL inside templates where it cannot be tested.
 - Extend Datasette's layout with `{% extends "base.html" %}`; no CSS framework.
 
-**CSRF is Datasette's own** and is on by default for POSTs. Every form needs
-`<input type="hidden" name="csrftoken" value="{{ csrftoken() }}">`. `fetch()`
-callers send the same value in an `X-CSRFToken` header. A POST without it gets
-403 before reaching our handler, so `curl -X POST` will fail; that is expected.
+**Cross-site POSTs need our own guard.** Datasette's CSRF check (asgi-csrf)
+only enforces on requests that carry cookies. We have no login and therefore
+no cookies, so it does not protect us: any web page open in the browser could
+`fetch("http://localhost:8001/-/approve-all", {method: "POST", mode: "no-cors"})`
+and it would go through. Every route in `approval.py` is wrapped in
+`same_origin_only`, which returns 403 unless `Sec-Fetch-Site` is `same-origin`
+or `none` (when present) and `Origin` is absent or matches the `Host` header.
+curl and scripts send neither header and still work. New POST routes must be
+registered through the same wrapper.
+
+**Network binding.** `datasette serve` binds to `127.0.0.1` by default (`-h`
+defaults to it, port 8001), so only this machine can connect. Never pass
+`-h 0.0.0.0`; the guard above assumes local-only access. Forms may still
+include `<input type="hidden" name="csrftoken" value="{{ csrftoken() }}">` and
+`fetch()` callers `X-CSRFToken`, which costs nothing and covers the
+cookie-bearing case, but it is not the protection we rely on. A
+`skip_csrf` plugin hook is never implemented.
 
 **`metadata.json`** carries display config only: table descriptions and sort
 order, canned `queries`, and per-plugin config under `"plugins"`. Read plugin
 config in code with `datasette.plugin_config("plugin_name")`. Do not put
 secrets there: it is served at `/-/metadata`. A `"settings"` block in
-metadata is ignored in 0.65. There is also no `csrf_protect` setting: CSRF is
-always on and can only be bypassed by a `skip_csrf` plugin hook, which we
-never implement.
+metadata is ignored in 0.65.
 
 ## Not ported
 
