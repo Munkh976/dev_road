@@ -4,7 +4,7 @@
 **Capital:** $15,000 (paper first)
 **Owner:** [you]
 **Created:** 2026-09-19
-**Version:** 1.0.3
+**Version:** 1.0.4
 
 > This document defines the strategy completely enough to backtest without
 > further decisions. If you find yourself making a judgment call while
@@ -325,6 +325,24 @@ A position is opened only if **all** conditions hold:
 | E8 | Sector weight after entry `<= 40%` |
 | E9 | New positions this rebalance `<= 2` |
 
+**Implementation of E1-E9** (`src/strategy/rules.py`, shared by backtest and
+live, pure functions):
+
+- Candidates are the ranked, not-yet-held symbols in rank order. Slots are
+  handed out greedily: only a candidate that passes every rule consumes a
+  position slot (E6), a new-entry slot (E9) and sector room (E8), so a name
+  blocked by E8 does not starve the next one. Every failed rule is listed.
+- **E5.** `flag == True` blocks. An unavailable AI layer proceeds without the
+  veto (§7). In the **backtest E5 always passes**: a veto based on news as of a
+  past date cannot be reproduced, and the backtest report says so.
+- **E7** needs the sized dollar value, so it is enforced after sizing: a new
+  position under $1,000 is dropped, the book resized, smallest first, until every
+  new position clears the minimum (inclusive). Existing positions are never
+  dropped by E7.
+- **E8** is checked with the candidate at `max_position_weight` (the most
+  sizing can give it), so an accepted entry cannot breach the cap once sized. A
+  candidate whose sector is unknown blocks (fail closed).
+
 **E9 matters more than it looks.** Capping entries at 2 per rebalance means
 the portfolio builds gradually rather than deploying all $15,000 into whatever
 six names happened to rank top on one arbitrary date. It spreads entry timing
@@ -342,6 +360,12 @@ Checked **weekly**. Any single condition triggers a full exit of that position.
 | X2 | `market_on == False` | Exit **all** positions to cash |
 | X3 | `price < (position_high - 3.0 × ATR_20)` | Trailing disaster stop |
 | X4 | `blended_momentum < 0` | Thesis has inverted |
+
+**Implementation of X1-X4.** When several fire on one position the reported
+rule is, in order, X2, X3, X4, X1 (regime, disaster stop, thesis, rank buffer);
+all that fired are listed in the detail. Fail closed: if X1, X3 or X4 cannot be
+evaluated (no rank today because the name left the universe or has no bar; no
+ATR; no position high) the position exits under that rule.
 
 **On the stop width.** 3× ATR is deliberately wide — roughly a 15–25% move
 for a typical name in this universe. Tight stops systematically *reduce*
@@ -410,6 +434,16 @@ w_final  = w * scalar
 target_value  = w_final * account_equity
 shares        = floor(target_value / current_price)   # fractional OK at IBKR
 ```
+
+**Clip-and-renormalize, as implemented.** Read literally, step 2 breaks its own
+cap: with fewer than five names, clipping to 20% and renormalizing to 100% gives
+two names 50% each, above `max_position_weight` (§10). Since E9 builds the book
+two names a month, that is the normal state for the first months. The
+implementation instead pins a name that hits a bound and shares what remains
+among the others, so the 8% and 20% bounds always hold and, when every name is
+capped, the rest is cash. The two agree whenever nothing is clipped. Gross
+exposure is also held to `max_gross_exposure` regardless of `scale_up_allowed`.
+The covariance window must be complete; a gap raises rather than being filled.
 
 **Remainder stays in cash.** `scalar < 1.0` means the portfolio is
 deliberately under-invested because its constituents are volatile. That is
@@ -569,3 +603,4 @@ The third one is the one that will actually happen. Watch for it.
 | 1.0.1 | 2026-09-19 | Pre-backtest; spends no parameter budget. Settles three implementation gaps: (1) S&P 500 list is a committed CSV with a manual quarterly update script, warn-only staleness check, `BRK.B` -> `BRK B` mapping (§2.1); (2) universe is rebuilt quarterly from all constituents and saved as a queryable snapshot, weekly refresh fetches only the saved 150 + SPY, sector comes from IBKR contract details, filter definitions made explicit (§2.2); (3) adjusted-price restatement is detected by overlap comparison at 0.1% and answered with a full refetch, with `endDateTime` empty (§3.1). Adds config keys only: `universe.constituents_path`, `constituents_max_age_days`, `adv_window_days`, `data.overlap_days`, `restatement_tolerance`, `volume_multiplier`. No strategy parameter changed. |
 | 1.0.2 | 2026-09-20 | Pre-backtest; spends no parameter budget. (1) `days_listed` counts calendar days, not bars (§2.2). (2) `data.history_years` 15 -> 22 so the backtest can reach the 2008-09 crash, with the survivorship-bias trade-off recorded, and `refresh --backfill` added to refetch existing caches at the new depth (§3.2). This is a data-coverage change, not a strategy parameter. |
 | 1.0.3 | 2026-09-20 | Pre-backtest; spends no parameter budget. (1) The backtest universe is chosen point-in-time: for each date, top 150 by trailing 20-day dollar volume among current constituents using only data available then (§2.3), instead of today's saved snapshot. (2) Records what remains biased: survivorship in the membership list, sectors and security type from today's labels. (3) `refresh --backfill --all-constituents` added, resumable (§3.2). (4) Notes the IBKR volume undercount does not affect selection (150th name ~14x the floor); no config change. |
+| 1.0.4 | 2026-09-20 | Pre-backtest; spends no parameter budget. Rules and sizing implemented, which forced these readings into the spec: E5 always passes in backtests; E7 enforced after sizing, smallest new name first; E8 checked at `max_position_weight`, unknown sector blocks; greedy slot allocation in rank order; exit-rule reporting priority X2>X3>X4>X1; unevaluable exit checks fail closed. **§8 correction:** "clip then renormalize" breaks the 20% cap with fewer than five names (two names -> 50% each); replaced by pin-at-bound-and-redistribute so the bounds always hold (§8). |
