@@ -44,16 +44,19 @@ await db.execute_write("UPDATE t SET x = ? WHERE id = ?", [x, id])
 - Each `execute_write` is its own transaction, run on Datasette's single write
   thread. Two calls are not atomic together.
 - For check-then-write, or several statements that must land together, use
-  `execute_write_fn`. The function runs inside one transaction and rolls back
-  on any exception:
+  `execute_write_fn`. **In Datasette 0.65.5 it does NOT open a transaction or
+  roll back for you** (it just calls your function on the write connection).
+  Wrap the body in `with conn:` to get commit on success and rollback on any
+  exception; the exception is re-raised to the `await` caller:
 
 ```python
 def _decide(conn):
-    n = conn.execute("UPDATE proposals SET status=? WHERE proposal_id=? "
-                     "AND status='PENDING_APPROVAL'", [new, pid]).rowcount
-    if n != 1:
-        raise ValueError("already decided")
-    conn.execute("INSERT INTO approvals (...) VALUES (...)", [...])
+    with conn:
+        n = conn.execute("UPDATE proposals SET status=? WHERE proposal_id=? "
+                         "AND status='PENDING_APPROVAL'", [new, pid]).rowcount
+        if n != 1:
+            raise ValueError("already decided")
+        conn.execute("INSERT INTO approvals (...) VALUES (...)", [...])
 
 await db.execute_write_fn(_decide)          # block=True by default
 ```

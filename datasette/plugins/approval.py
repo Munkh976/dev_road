@@ -1,8 +1,8 @@
 """
 Datasette plugin: approve / reject / modify trade proposals in the browser.
 
-Follows the pattern from your EDGI portal work: a register_routes hook, POST
-handlers with CSRF, and writes through datasette.get_database().execute_write.
+Patterns (register_routes, atomic writes, CSRF) are documented in
+docs/datasette_patterns.md.
 
 Safety properties worth keeping if you refactor this:
 
@@ -13,7 +13,11 @@ Safety properties worth keeping if you refactor this:
     a kill criterion (spec section 14), and you cannot measure that without
     this column.
   * A proposal whose risk_status is REJECT cannot be approved at all. The
-    risk engine is not advisory.
+    risk engine is not advisory. This is enforced in the write's WHERE clause,
+    not only in a pre-check, so a stale read cannot slip past it.
+  * Every decision is one transaction (status flip + approval row). Datasette
+    0.65 does not open a transaction for execute_write_fn, so the write
+    functions below use `with conn:` to get commit/rollback.
 """
 
 from __future__ import annotations
@@ -24,6 +28,10 @@ from datetime import datetime, timezone
 
 from datasette import hookimpl
 from datasette.utils.asgi import Forbidden, Response
+
+
+class _AlreadyDecided(Exception):
+    """The guarded status flip matched no row: decided already, or not allowed."""
 
 
 def _now() -> str:
@@ -92,18 +100,33 @@ async def approve_proposal(request, datasette):
         if qty <= 0:
             return Response.json({"error": "modified_quantity must be > 0"}, status=400)
 
-    await db.execute_write(
-        """INSERT INTO approvals
-           (proposal_id, decided_at, decision, modified_quantity,
-            override, override_reason, decided_by)
-           VALUES (?, ?, ?, ?, ?, ?, 'human')""",
-        [proposal_id, _now(), decision, qty, override, override_reason],
-    )
     new_status = {"APPROVE": "APPROVED", "REJECT": "REJECTED", "MODIFY": "MODIFIED"}[decision]
-    await db.execute_write(
-        "UPDATE proposals SET status = ? WHERE proposal_id = ?",
-        [new_status, proposal_id],
-    )
+
+    def _decide(conn):
+        with conn:  # one transaction: commit on success, roll back on any error
+            # Guarded flip first: only one caller can win, and a risk-REJECT
+            # proposal can never become APPROVED/MODIFIED even if the Python
+            # pre-check above was bypassed or read stale data.
+            n = conn.execute(
+                """UPDATE proposals SET status = ?
+                   WHERE proposal_id = ? AND status = 'PENDING_APPROVAL'
+                     AND (? = 'REJECT' OR risk_status != 'REJECT')""",
+                [new_status, proposal_id, decision],
+            ).rowcount
+            if n != 1:
+                raise _AlreadyDecided()
+            conn.execute(
+                """INSERT INTO approvals
+                   (proposal_id, decided_at, decision, modified_quantity,
+                    override, override_reason, decided_by)
+                   VALUES (?, ?, ?, ?, ?, ?, 'human')""",
+                [proposal_id, _now(), decision, qty, override, override_reason],
+            )
+
+    try:
+        await db.execute_write_fn(_decide)
+    except _AlreadyDecided:
+        return Response.json({"error": "proposal already decided"}, status=409)
 
     return Response.json(
         {
@@ -134,16 +157,31 @@ async def approve_all(request, datasette):
     )
     ids = [r["proposal_id"] for r in rows]
     now = _now()
-    for pid in ids:
-        await db.execute_write(
-            """INSERT INTO approvals
-               (proposal_id, decided_at, decision, override, decided_by)
-               VALUES (?, ?, 'APPROVE', 0, 'human')""",
-            [pid, now],
-        )
-        await db.execute_write(
-            "UPDATE proposals SET status = 'APPROVED' WHERE proposal_id = ?", [pid]
-        )
+
+    def _approve_all(conn):
+        approved = 0
+        with conn:  # all-or-nothing: a failure leaves every proposal pending
+            for pid in ids:
+                # Same guard as the single path, re-checked at write time.
+                n = conn.execute(
+                    """UPDATE proposals SET status = 'APPROVED'
+                       WHERE proposal_id = ? AND status = 'PENDING_APPROVAL'
+                         AND risk_status = 'PASS'
+                         AND (ai_flag IS NULL OR ai_flag = 0)""",
+                    [pid],
+                ).rowcount
+                if n != 1:
+                    continue  # decided or changed since the read; skip it
+                conn.execute(
+                    """INSERT INTO approvals
+                       (proposal_id, decided_at, decision, override, decided_by)
+                       VALUES (?, ?, 'APPROVE', 0, 'human')""",
+                    [pid, now],
+                )
+                approved += 1
+        return approved
+
+    approved = await db.execute_write_fn(_approve_all)
 
     skipped = await db.execute(
         """SELECT COUNT(*) AS n FROM proposals
@@ -152,7 +190,7 @@ async def approve_all(request, datasette):
     return Response.json(
         {
             "ok": True,
-            "approved": len(ids),
+            "approved": approved,
             "still_pending": skipped.first()["n"],
             "note": "Flagged and risk-rejected proposals were left for individual review.",
         }
