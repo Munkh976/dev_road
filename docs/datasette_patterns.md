@@ -4,13 +4,23 @@ Three patterns, extracted from a prior project and checked against Datasette
 0.65.5 (the installed version). Single user on localhost: no auth, sessions,
 roles or deployment config belongs here.
 
-**Version pin:** `requirements.txt` holds `datasette>=0.65.5,<1.0`. 0.65.5 is
-the patched 0.65.x release (it includes the September 2026 security fixes), so
-do not go lower. The ceiling is because `approval.py` and `host_guard.py`
-target the 0.65 plugin hooks and write APIs (`register_routes`,
-`asgi_wrapper`, `execute_write_fn`, `skip_csrf` behaviour), which 1.0 changes.
-Moving to 1.x is a deliberate migration with its own test pass, not a
-`pip install -U`.
+**Version pin:** `requirements.txt` holds `datasette>=0.65.5,<1.0`.
+
+- **Floor (security).** 0.65.4 (2026-09-10) backported permission fixes, and
+  0.65.5 (2026-09-16) fixed trailing-newline table names bypassing
+  permissions. Do not go lower.
+  Source: <https://docs.datasette.io/en/stable/changelog.html>
+- **Ceiling (`<1.0`).** The 1.0 alphas break this repo in four places:
+  - 1.0a20 replaces the permissions system.
+  - 1.0a31 moves canned queries to "stored queries" in `datasette.yaml`; all
+    10 of ours are in `metadata.json`.
+  - 1.0a37 adds a `transaction=` argument to `execute_write`, changing the
+    write API our handlers are built on.
+  - 1.0a40 changes when `asgi_wrapper` runs, which `host_guard.py` depends on.
+
+  Source: <https://docs.datasette.io/en/latest/changelog.html>
+
+Upgrading to 1.0 is a planned migration, not a dependency bump.
 
 Run command (from `CLAUDE.md`):
 
