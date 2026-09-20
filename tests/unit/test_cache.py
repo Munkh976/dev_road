@@ -122,3 +122,16 @@ def test_next_fetch_duration():
     assert next_fetch_duration(date(2026, 9, 12), 15, today) == "12 D"
     # Never request less than a small floor, so restatements are picked up.
     assert next_fetch_duration(date(2026, 9, 19), 15, today) == "5 D"
+
+
+def test_next_fetch_duration_uses_years_when_a_day_request_would_be_rejected():
+    today = date(2026, 9, 19)
+    # IBKR rejects "N D" beyond a year; a cache that old is refetched in full.
+    assert next_fetch_duration(date(2025, 1, 1), 15, today) == "15 Y"
+    assert next_fetch_duration(date(2025, 9, 19), 15, today) == "15 Y"   # 365 + overlap
+    assert next_fetch_duration(date(2025, 9, 25), 15, today) == "364 D"
+
+
+def test_next_fetch_duration_overlap_is_configurable():
+    today = date(2026, 9, 19)
+    assert next_fetch_duration(date(2026, 9, 12), 15, today, overlap_days=10) == "17 D"

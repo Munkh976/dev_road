@@ -47,6 +47,9 @@ class UniverseCfg(BaseModel):
     min_days_listed: int = Field(ge=0)
     security_types: list[str]
     max_symbols: int = Field(gt=0)
+    constituents_path: str
+    constituents_max_age_days: int = Field(gt=0)
+    adv_window_days: int = Field(gt=0)
 
 
 class DataCfg(BaseModel):
@@ -58,6 +61,9 @@ class DataCfg(BaseModel):
     min_bars_required: int = Field(gt=0)
     ibkr_requests_per_minute: float = Field(gt=0, le=6)
     max_stale_days: int = Field(gt=0)
+    overlap_days: int = Field(gt=0)
+    restatement_tolerance: float = Field(gt=0, lt=1)
+    volume_multiplier: float = Field(gt=0)
 
     @field_validator("ibkr_requests_per_minute")
     @classmethod
@@ -257,6 +263,10 @@ class Config(BaseModel):
     @property
     def cache_path(self) -> Path:
         return _anchor(os.getenv("WM_CACHE_DIR", self.data.cache_dir))
+
+    @property
+    def constituents_path(self) -> Path:
+        return _anchor(self.universe.constituents_path)
 
     @property
     def db_path(self) -> Path:

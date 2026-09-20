@@ -4,7 +4,7 @@
 
 strategy:
   name: weekly_momentum_v1
-  version: 1.0.0
+  version: 1.0.1
   spec: docs/STRATEGY_SPEC.md
 
 # ---------------------------------------------------------------- capital
@@ -23,6 +23,9 @@ universe:
   min_days_listed: 400
   security_types: [COMMON]
   max_symbols: 150             # IBKR pacing: ~6 symbols/min -> ~25 min refresh
+  constituents_path: ./data/universe/sp500_constituents.csv
+  constituents_max_age_days: 100   # older -> warn, never halt (spec 2.1)
+  adv_window_days: 20
 
 # ---------------------------------------------------------------- data
 data:
@@ -34,6 +37,9 @@ data:
   min_bars_required: 300
   ibkr_requests_per_minute: 6  # stay under 60 per 10 minutes
   max_stale_days: 5            # exceed -> halt, generate no orders
+  overlap_days: 5              # incremental fetch overlap, for restatement checks
+  restatement_tolerance: 0.001 # overlap close differs by more -> full refetch
+  volume_multiplier: 1         # 1 = IBKR volume is in shares; 100 if in round lots
 
 # ---------------------------------------------------------------- signals
 signals:

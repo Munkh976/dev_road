@@ -262,14 +262,27 @@ class PriceCache:
             raise ValueError(f"{symbol}: high < low on some bars")
 
 
-def next_fetch_duration(last: date | None, history_years: int, today: date | None = None) -> str:
+# IBKR rejects day-denominated durations beyond a year; those need "N Y".
+MAX_DAY_DURATION = 365
+DEFAULT_OVERLAP_DAYS = 5
+
+
+def next_fetch_duration(
+    last: date | None,
+    history_years: int,
+    today: date | None = None,
+    overlap_days: int = DEFAULT_OVERLAP_DAYS,
+) -> str:
     """IBKR durationStr for the next incremental fetch.
 
-    Full history when nothing is cached; otherwise only the missing days plus
-    a small overlap so restatements are picked up.
+    Full history when nothing is cached (or the gap is too long for a day
+    duration); otherwise only the missing days plus a small overlap so
+    restatements are picked up.
     """
     if last is None:
         return f"{history_years} Y"
     today = today or date.today()
-    days = (today - last).days + 5
-    return f"{max(days, 5)} D"
+    days = (today - last).days + overlap_days
+    if days > MAX_DAY_DURATION:
+        return f"{history_years} Y"
+    return f"{max(days, overlap_days)} D"

@@ -81,13 +81,20 @@ exactly one place. `BrokerInterface` deliberately has no
 
 ## Current status
 
-**Built and tested (50 tests passing):**
+**Built and tested (112 tests passing):**
 
 - `src/config.py` — typed pydantic loader, safety validators
-- `db/schema.sql` — 13 tables, 4 views
+- `db/schema.sql` — 15 tables, 4 views (adds `contract_info`, `universe_snapshots`)
 - `scripts/init_db.py` — idempotent
 - `src/data/pacing.py` — token bucket + sliding window
 - `src/data/cache.py` — parquet cache, incremental merge, bar validation
+- `src/data/universe.py` — constituents CSV loader (`BRK.B` -> `BRK B`), section 2
+  filters, `universe_snapshots` read/write
+- `src/data/refresh.py` — `build_universe()`, `fetch_symbol()`, `update_symbol()`
+  (overlap-based restatement check, full refetch), weekly and
+  `--rebuild-universe` refresh, data gate. Tested against a mocked IB; needs no
+  gateway. **Not yet run against a real IB Gateway.**
+- `scripts/update_constituents.py` — manual quarterly helper; dry run by default
 - `src/execution/broker.py` — interface and dataclasses
 - `datasette/metadata.json` — 10 canned queries, all verified against schema
 - `datasette/plugins/approval.py` — approve/reject/halt/journal routes; atomic
@@ -97,7 +104,6 @@ exactly one place. `BrokerInterface` deliberately has no
 
 **Stubs — signatures and docstrings fixed, bodies raise `NotImplementedError`:**
 
-- `src/data/refresh.py` — `build_universe()`, `fetch_symbol()`
 - `src/strategy/signals.py` — momentum, volatility, ATR, regime
 - `src/strategy/rules.py` — E1–E9, X1–X4, sizing
 - `src/risk/engine.py` — 14 checks
@@ -119,9 +125,9 @@ Each step is useless without the one before it.
 2. ~~SQLite schema~~ ✅
 3. ~~Parquet cache + pacing~~ ✅
 4. ~~Broker interface~~ ✅
-5. **`build_universe()`** ← next
-6. **IBKR fetch** — `fetch_symbol()`, then a real `refresh`
-7. **Signals** — with an explicit look-ahead test
+5. ~~`build_universe()`~~ ✅
+6. ~~IBKR fetch~~ ✅ (mocked; first real run is a manual step)
+7. **Signals** — with an explicit look-ahead test ← next
 8. **Backtest** — walk-forward, out-of-sample only
 9. **Acceptance gate (A1–A6)** — **if A1 fails, stop and buy SPY**
 10. Rules + sizing

@@ -52,6 +52,47 @@ CREATE TABLE IF NOT EXISTS data_quality (
 
 
 -- ===========================================================================
+-- contract_info — IBKR contract details per constituent, refreshed at each
+-- quarterly universe rebuild. Source of stock type (COMMON only) and sector
+-- (entry rule E8). Not a position table: it describes securities, not holdings.
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS contract_info (
+    symbol            TEXT PRIMARY KEY,          -- IBKR form, e.g. 'BRK B'
+    con_id            INTEGER,
+    stock_type        TEXT,                      -- ContractDetails.stockType
+    sector            TEXT,                      -- ContractDetails.industry
+    category          TEXT,
+    subcategory       TEXT,
+    long_name         TEXT,
+    fetched_at        TEXT NOT NULL
+);
+
+
+-- ===========================================================================
+-- universe_snapshots — the chosen universe at each quarterly rebuild. The
+-- backtest and audit trail ask "which list was in force on date D" with the
+-- latest snapshot_date <= D. Append-only by date; a same-day rebuild replaces
+-- that day's rows.
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS universe_snapshots (
+    snapshot_date       TEXT NOT NULL,           -- date of the rebuild
+    symbol              TEXT NOT NULL,           -- IBKR form
+    rank                INTEGER NOT NULL,        -- 1 = highest dollar volume
+    name                TEXT,
+    sector              TEXT,
+    category            TEXT,
+    stock_type          TEXT NOT NULL,
+    avg_dollar_volume_20d REAL NOT NULL,
+    price               REAL NOT NULL,
+    days_listed         INTEGER NOT NULL,
+    constituents_as_of  TEXT,                    -- as_of_date of the S&P list used
+    data_as_of          TEXT NOT NULL,           -- last SPY bar the filters saw
+    PRIMARY KEY (snapshot_date, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_universe_symbol ON universe_snapshots(symbol, snapshot_date DESC);
+
+
+-- ===========================================================================
 -- signals — one row per symbol per signal date. Reproducible from the cache.
 -- ===========================================================================
 CREATE TABLE IF NOT EXISTS signals (

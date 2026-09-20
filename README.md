@@ -212,11 +212,11 @@ you read last week's journal.
 Do not skip ahead. Each step is useless without the previous one.
 
 - [x] **1. Config + validation** — guards tested
-- [x] **2. SQLite schema** — 13 tables, 4 views
+- [x] **2. SQLite schema** — 15 tables, 4 views
 - [x] **3. Parquet cache + pacing limiter** — tested
 - [x] **4. Broker interface** — abstraction fixed
-- [ ] **5. `build_universe()`** — the S&P filter in `src/data/refresh.py`
-- [ ] **6. IBKR fetch** — `fetch_symbol()`, then a real `make refresh`
+- [x] **5. `build_universe()`** — the S&P filter in `src/data/refresh.py`
+- [x] **6. IBKR fetch** — `fetch_symbol()`, tested against a mocked IB; first real `make refresh` still to do
 - [ ] **7. Signals** — `src/strategy/signals.py`, with a look-ahead test
 - [ ] **8. Backtest** — walk-forward, out-of-sample only
 - [ ] **9. Acceptance gate** — A1–A6. **If A1 fails, stop and buy SPY.**
@@ -256,14 +256,14 @@ weekly-momentum/
 │   └── STRATEGY_SPEC.md     the rules and why — read this first
 ├── config.yaml              every parameter
 ├── Makefile                 all commands
-├── db/schema.sql            13 tables, 4 views
+├── db/schema.sql            15 tables, 4 views
 ├── scripts/init_db.py
 ├── src/
 │   ├── config.py            typed loader + safety validators
 │   ├── data/
 │   │   ├── pacing.py        IBKR 6/min limiter
 │   │   ├── cache.py         parquet price cache
-│   │   └── refresh.py       weekly update (stub)
+│   │   └── refresh.py       weekly / quarterly cache refresh
 │   ├── strategy/
 │   │   ├── signals.py       pure functions (stub)
 │   │   └── rules.py         E1-E9, X1-X4, sizing (stub)
