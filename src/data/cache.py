@@ -35,6 +35,11 @@ MANIFEST_NAME = "_manifest.json"
 # unadjusted split rather than a real price. Flagged, not silently dropped.
 SUSPICIOUS_DAILY_MOVE = 0.50
 
+# Calendar conversion and the tolerance on "the first bar reaches the target
+# start": IBKR's "22 Y" begins at the first trading day on/after that date.
+DAYS_PER_YEAR = 365.25
+BACKFILL_SLACK_DAYS = 10
+
 
 @dataclass
 class CacheStats:
@@ -119,14 +124,44 @@ class PriceCache:
 
     # ------------------------------------------------------------- writing
 
-    def write(self, symbol: str, df: pd.DataFrame) -> CacheStats:
-        """Replace the cached bars for a symbol. Validates before writing."""
+    def write(
+        self, symbol: str, df: pd.DataFrame, *, history_years: int | None = None
+    ) -> CacheStats:
+        """Replace the cached bars for a symbol. Validates before writing.
+
+        `history_years` marks the write as a full-history fetch of that depth,
+        recorded in the manifest so a backfill can be resumed. A short symbol
+        (recent listing) never has bars back to the target start, so the bars
+        alone cannot say "this was already backfilled". Writes that do not pass
+        it (incremental merges) keep whatever the manifest already holds.
+        """
         df = self._normalize(df)
         self._validate(symbol, df)
         df.to_parquet(self.path_for(symbol), compression="snappy")
         stats = self.inspect(symbol, df)
-        self._update_manifest(symbol, stats)
+        self._update_manifest(symbol, stats, history_years)
         return stats
+
+    def is_backfilled(
+        self, symbol: str, history_years: int, today: date | None = None
+    ) -> bool:
+        """Was this symbol fetched in full at `history_years` (or deeper)?
+
+        True if the manifest says a full fetch of that depth happened, or, for
+        caches written before the marker existed, if the first bar already
+        reaches the target start. Anything else is not backfilled: fail toward
+        refetching, which costs one request, rather than toward a shallow cache.
+        """
+        entry = self.read_manifest().get(symbol.upper())
+        if not entry or not entry.get("rows"):
+            return False
+        if (entry.get("history_years") or 0) >= history_years:
+            return True
+        first = entry.get("first_date")
+        if not first:
+            return False
+        target = (today or date.today()) - timedelta(days=round(history_years * DAYS_PER_YEAR))
+        return date.fromisoformat(first) <= target + timedelta(days=BACKFILL_SLACK_DAYS)
 
     def merge(self, symbol: str, new_bars: pd.DataFrame) -> CacheStats:
         """Merge newly fetched bars into the cache.
@@ -210,9 +245,15 @@ class PriceCache:
         )
         return manifest
 
-    def _update_manifest(self, symbol: str, stats: CacheStats) -> None:
+    def _update_manifest(
+        self, symbol: str, stats: CacheStats, history_years: int | None = None
+    ) -> None:
         manifest = self.read_manifest()
-        manifest[symbol.upper()] = self._manifest_entry(stats)
+        entry = self._manifest_entry(stats)
+        previous = manifest.get(symbol.upper(), {}).get("history_years")
+        if history_years is not None or previous is not None:
+            entry["history_years"] = history_years if history_years is not None else previous
+        manifest[symbol.upper()] = entry
         self._manifest_path.write_text(
             json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
         )

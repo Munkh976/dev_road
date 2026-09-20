@@ -92,7 +92,8 @@ exactly one place. `BrokerInterface` deliberately has no
   filters, `universe_snapshots` read/write
 - `src/data/refresh.py` — `build_universe()`, `fetch_symbol()`, `update_symbol()`
   (overlap-based restatement check, full refetch), weekly and
-  `--rebuild-universe` and `--backfill` refresh, data gate. Tested against a
+  `--rebuild-universe` and `--backfill` refresh (`--backfill --all-constituents`
+  is resumable, for the point-in-time backtest universe), data gate. Tested against a
   mocked IB; needs no gateway. Run against a real gateway: one full universe
   rebuild (504/504) and a SPY backfill to 2004.
 - `scripts/update_constituents.py` — manual quarterly helper; dry run by default

@@ -197,7 +197,7 @@ def fetch_symbol(
 @dataclass
 class SymbolUpdate:
     symbol: str
-    action: str            # full | incremental | refetch | backfill
+    action: str            # full | incremental | refetch | backfill | skipped
     reason: str | None = None   # why a refetch happened
     bars_fetched: int = 0       # bars in the last response (the full one, on a refetch)
 
@@ -226,7 +226,7 @@ def _restatement_reason(
 
 def update_symbol(
     ib, symbol: str, cache: PriceCache, limiter: PacingLimiter, cfg: Config,
-    *, backfill: bool = False,
+    *, backfill: bool = False, resume: bool = False,
 ) -> SymbolUpdate:
     """Bring one symbol's cache up to date.
 
@@ -240,18 +240,27 @@ def update_symbol(
     after raising `data.history_years`: incremental fetches only extend
     forwards, so older history is never added by a normal refresh. The write
     replaces the cache rather than stitching onto it (spec section 3.1).
+
+    `resume=True` (with `backfill`) skips a symbol that is already backfilled
+    to the target start, so an interrupted 84-minute run continues where it
+    stopped instead of paying for the same requests twice. Every full-history
+    write records `history_years` in the manifest, which is what "already
+    backfilled" means for a symbol too recently listed to have old bars.
     """
-    full = next_fetch_duration(None, cfg.data.history_years)
+    years = cfg.data.history_years
+    full = next_fetch_duration(None, years)
     existing = cache.read(symbol)
 
     if backfill:
+        if resume and cache.is_backfilled(symbol, years):
+            return SymbolUpdate(symbol, "skipped", "already backfilled")
         bars = fetch_symbol(ib, symbol, full, cfg, limiter)
-        cache.write(symbol, bars)
+        cache.write(symbol, bars, history_years=years)
         return SymbolUpdate(symbol, "backfill", f"backfill to {full}", len(bars))
 
     if existing is None or existing.empty:
         bars = fetch_symbol(ib, symbol, full, cfg, limiter)
-        cache.write(symbol, bars)
+        cache.write(symbol, bars, history_years=years)
         return SymbolUpdate(symbol, "full", bars_fetched=len(bars))
 
     duration = next_fetch_duration(
@@ -269,7 +278,7 @@ def update_symbol(
 
     log.warning("REFETCH %s: %s", symbol, reason)
     bars = fetch_symbol(ib, symbol, full, cfg, limiter)
-    cache.write(symbol, bars)
+    cache.write(symbol, bars, history_years=years)
     return SymbolUpdate(symbol, "refetch", reason, len(bars))
 
 
@@ -306,6 +315,7 @@ def fetch_contract_info(ib, symbol: str, cfg: Config) -> ContractInfo | None:
 class RefreshSummary:
     symbols_expected: int = 0
     updated: int = 0
+    skipped: int = 0          # resumed backfill: already at the target depth
     failed: dict[str, str] = field(default_factory=dict)
     refetches: list[tuple[str, str]] = field(default_factory=list)
     pacing_violations: int = 0
@@ -313,6 +323,7 @@ class RefreshSummary:
     def as_detail(self) -> dict:
         return {
             "updated": self.updated,
+            "skipped": self.skipped,
             "failed": self.failed,
             "refetch_count": len(self.refetches),
             "refetches": [{"symbol": s, "reason": r} for s, r in self.refetches],
@@ -322,12 +333,16 @@ class RefreshSummary:
 
 def _update_all(
     ib, symbols: list[str], cache: PriceCache, limiter: PacingLimiter, cfg: Config,
-    *, backfill: bool = False,
+    *, backfill: bool = False, resume: bool = False,
 ) -> RefreshSummary:
     summary = RefreshSummary(symbols_expected=len(symbols))
     for i, sym in enumerate(symbols, start=1):
+        # The benchmark is never skipped: one request keeps the data gate honest.
+        skip_ok = resume and sym != cfg.universe.benchmark
         try:
-            res = update_symbol(ib, sym, cache, limiter, cfg, backfill=backfill)
+            res = update_symbol(
+                ib, sym, cache, limiter, cfg, backfill=backfill, resume=skip_ok
+            )
         except PacingViolation as exc:
             # Not retried. The limiter now blocks the next symbol for ten minutes.
             summary.pacing_violations += 1
@@ -337,6 +352,10 @@ def _update_all(
         except (FetchError, ValueError) as exc:
             summary.failed[sym] = str(exc)
             log.error("%s failed: %s", sym, exc)
+            continue
+        if res.action == "skipped":
+            summary.skipped += 1
+            log.info("[%d/%d] %s skipped (%s)", i, len(symbols), sym, res.reason)
             continue
         summary.updated += 1
         if res.action == "refetch":
@@ -403,6 +422,7 @@ def refresh(
     limiter: PacingLimiter | None = None,
     rebuild_universe: bool = False,
     backfill: bool = False,
+    all_constituents: bool = False,
 ) -> int:
     """Update the cache. Returns a process exit code (0 ok, 1 error, 2 halted
     by the data gate).
@@ -410,9 +430,19 @@ def refresh(
     `backfill` refetches the saved universe + SPY in full at the configured
     history_years. It does not rebuild the universe.
 
+    `all_constituents` (with `backfill`) backfills every symbol in the
+    constituents CSV plus SPY, and is resumable: symbols already backfilled to
+    the target start are skipped. The backtest picks its universe point-in-time
+    from all of them, so it needs history for names that are not in today's
+    top 150 (spec 1.0.3).
+
     `ib` and `limiter` are injectable so the flow can be tested without a
     gateway.
     """
+    if all_constituents and not backfill:
+        raise ValueError("all_constituents is a backfill option; pass backfill=True")
+    if all_constituents and rebuild_universe:
+        raise ValueError("all_constituents and rebuild_universe cannot be combined")
     cfg = cfg or load_config()
     cache = PriceCache(cfg.cache_path)
     limiter = limiter or PacingLimiter(requests_per_minute=cfg.data.ibkr_requests_per_minute)
@@ -421,30 +451,39 @@ def refresh(
     conn = open_db(cfg)
     run_id = start_run(
         conn, cfg, "refresh",
-        "universe rebuild" if rebuild_universe else "backfill" if backfill else "weekly",
+        "universe rebuild" if rebuild_universe
+        else "backfill all constituents" if all_constituents
+        else "backfill" if backfill else "weekly",
     )
     owns_ib = ib is None
     try:
-        if rebuild_universe:
+        if rebuild_universe or all_constituents:
             constituents = load_constituents(cfg)
             tickers = [c.symbol for c in constituents]
         else:
             tickers = load_universe(conn)
         symbols = [bench] + [s for s in tickers if s != bench]   # benchmark first
 
-        eta_min = limiter.estimate_seconds(len(symbols)) / 60
-        log.info("refreshing %d symbols, ETA ~%.0f min (+1 request per refetch)",
-                 len(symbols), eta_min)
+        pending = len(symbols)
+        if all_constituents:
+            pending = 1 + sum(
+                not cache.is_backfilled(s, cfg.data.history_years) for s in symbols[1:]
+            )
+        eta_min = limiter.estimate_seconds(pending) / 60
+        log.info("refreshing %d symbols (%d to fetch), ETA ~%.0f min "
+                 "(+1 request per refetch)", len(symbols), pending, eta_min)
 
         if ib is None:
             ib = _connect(cfg)
-        summary = _update_all(ib, symbols, cache, limiter, cfg, backfill=backfill)
+        summary = _update_all(
+            ib, symbols, cache, limiter, cfg, backfill=backfill, resume=all_constituents
+        )
         passed, halt_reason = _data_gate(conn, run_id, cache, symbols, summary, cfg)
 
         log.info(
-            "refresh summary: %d/%d updated, %d failed, %d refetched (restated), "
-            "%d pacing violations",
-            summary.updated, summary.symbols_expected, len(summary.failed),
+            "refresh summary: %d/%d updated, %d skipped, %d failed, %d refetched "
+            "(restated), %d pacing violations",
+            summary.updated, summary.symbols_expected, summary.skipped, len(summary.failed),
             len(summary.refetches), summary.pacing_violations,
         )
         for sym, why in summary.refetches:
@@ -536,7 +575,18 @@ def main(argv: list[str] | None = None) -> int:
         help="smoke test: fetch only these symbols (e.g. SPY,AAPL,MSFT) and print "
              "a summary; writes no universe snapshot",
     )
+    parser.add_argument(
+        "--all-constituents", action="store_true",
+        help="with --backfill: every symbol in the constituents CSV plus SPY, "
+             "not just the saved universe. Resumable: symbols already backfilled "
+             "to the target start are skipped. ~84 min for a cold run",
+    )
     args = parser.parse_args(argv)
+    if args.all_constituents and not args.backfill:
+        parser.error("--all-constituents is a backfill option; add --backfill")
+    if args.all_constituents and (args.symbols or args.rebuild_universe):
+        parser.error("--all-constituents cannot be combined with --symbols or "
+                     "--rebuild-universe")
     if args.symbols and args.rebuild_universe:
         parser.error("--symbols and --rebuild-universe cannot be combined")
     if args.backfill and args.rebuild_universe:
@@ -546,7 +596,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.symbols:
         return smoke(args.symbols, backfill=args.backfill)
     try:
-        return refresh(rebuild_universe=args.rebuild_universe, backfill=args.backfill)
+        return refresh(
+            rebuild_universe=args.rebuild_universe, backfill=args.backfill,
+            all_constituents=args.all_constituents,
+        )
     except UniverseError as exc:
         log.error("%s", exc)
         return EXIT_ERROR

@@ -4,7 +4,7 @@
 **Capital:** $15,000 (paper first)
 **Owner:** [you]
 **Created:** 2026-09-19
-**Version:** 1.0.2
+**Version:** 1.0.3
 
 > This document defines the strategy completely enough to backtest without
 > further decisions. If you find yourself making a judgment call while
@@ -138,6 +138,52 @@ reported in round lots in some configurations. `data.volume_multiplier`
 correction rather than a code change. A rebuild that selects zero symbols
 fails loudly; check SPY's computed dollar volume after the first rebuild.
 
+### 2.3 The backtest universe is chosen point-in-time
+
+The saved snapshot (§2.2) is today's top 150 by dollar volume. Backtesting on
+it builds in hindsight: a stock is among the most traded today largely because
+it went up, so a 2009 backtest on that list is handed the future winners. The
+backtest therefore does **not** use the snapshot.
+
+**Rule.** For each date `D`, the backtest universe is the top 150 by trailing
+20-day average dollar volume among **current** constituents, computed only from
+bars on or before `D`. The §2 filters are applied as of `D` with the same
+definitions as §2.2: `avg_dollar_volume_20d >= $20M`, `price >= $10` (close on
+`D`), `days_listed >= 400` (calendar days from the first cached bar to `D`),
+and a bar on `D` (no bar, no price, not tradable). Ranking is by dollar volume
+descending, ties broken by symbol. The result is recomputed every trading day;
+live trading recomputes it quarterly (§2.2), a difference that only makes the
+backtest slightly more responsive than live.
+
+Needs full history for every constituent, not only today's 150:
+`refresh --backfill --all-constituents` (§3.2).
+
+**What this fixes.** Selection into the universe no longer uses information
+from after `D`.
+
+**What remains, and biases the backtest optimistic.** Recorded so they are not
+rediscovered later:
+
+1. **Survivorship in the membership list itself.** The list is today's S&P 500.
+   Companies that were in the index in 2009 and have since been removed
+   (acquired, bankrupt, shrunk, delisted) are absent, and companies that joined
+   the index *because* they grew are present before they qualified. Point-in-time
+   index membership is a paid data product; without it this bias is unmeasured.
+   Read early-window results with it in mind (§3.2, §11).
+2. **Sectors are today's labels** (`ContractDetails.industry` at rebuild time).
+   E8's 40% sector cap uses the current classification for every date. A company
+   that changed sector, or an industry reclassified since, is mislabelled in
+   the past. The error is small for large caps and its direction is not known.
+3. **Security type is today's label**, for the same reason. It is static per
+   security in practice, so this is the least worrying of the three.
+
+**IBKR volume undercount does not affect selection.** IBKR daily volume can
+undercount consolidated volume. Selection is a *ranking* by dollar volume, so a
+uniform undercount leaves the order unchanged, and the `$20M` floor is not the
+binding constraint: at the 2026-09-20 rebuild the 150th name (COF) traded
+$290.8M a day, about 14x the floor. The cap binds, not the floor. No
+`volume_multiplier` change.
+
 ---
 
 ## 3. Data
@@ -216,6 +262,16 @@ optimistic, the regime part is not.
 universe plus SPY (~150 requests, ~25 min), replacing each cache file (never
 stitching, §3.1). `refresh --symbols SPY --backfill` does it for SPY alone as a
 smoke test.
+
+`refresh --backfill --all-constituents` does the same for **every** symbol in
+the constituents CSV plus SPY (~500 requests, ~84 min cold) so the backtest can
+choose its universe point-in-time (§2.3). It is **resumable**: a symbol already
+backfilled to the target start is skipped. "Backfilled" is recorded as
+`history_years` in the cache manifest by every full-history write, because a
+recent listing never has bars back to the target start and the bars alone could
+not distinguish it from a shallow cache. A cache written before the marker
+existed counts as backfilled if its first bar reaches the target start. SPY is
+always refetched, so the data gate sees fresh bars.
 
 ---
 
@@ -421,6 +477,10 @@ Written down now so they are not discovered as surprises later.
    a meaningful and unmeasured amount.
    The universe is built from **today's** S&P 500 membership (§2.1), so every
    company that fell out of the index since 2007 is absent from the backtest.
+   Since 1.0.3 the backtest chooses the top 150 point-in-time from those
+   constituents (§2.3), which removes the hindsight in *which of them* are
+   liquid, but not the bias in the membership list itself, nor sectors taken
+   from today's labels.
 5. **Tax drag.** Monthly entries and weekly exits generate short-term capital
    gains in a taxable account. Post-tax returns will be materially below the
    backtest.
@@ -508,3 +568,4 @@ The third one is the one that will actually happen. Watch for it.
 | 1.0.0 | 2026-09-19 | Initial specification, pre-backtest |
 | 1.0.1 | 2026-09-19 | Pre-backtest; spends no parameter budget. Settles three implementation gaps: (1) S&P 500 list is a committed CSV with a manual quarterly update script, warn-only staleness check, `BRK.B` -> `BRK B` mapping (§2.1); (2) universe is rebuilt quarterly from all constituents and saved as a queryable snapshot, weekly refresh fetches only the saved 150 + SPY, sector comes from IBKR contract details, filter definitions made explicit (§2.2); (3) adjusted-price restatement is detected by overlap comparison at 0.1% and answered with a full refetch, with `endDateTime` empty (§3.1). Adds config keys only: `universe.constituents_path`, `constituents_max_age_days`, `adv_window_days`, `data.overlap_days`, `restatement_tolerance`, `volume_multiplier`. No strategy parameter changed. |
 | 1.0.2 | 2026-09-20 | Pre-backtest; spends no parameter budget. (1) `days_listed` counts calendar days, not bars (§2.2). (2) `data.history_years` 15 -> 22 so the backtest can reach the 2008-09 crash, with the survivorship-bias trade-off recorded, and `refresh --backfill` added to refetch existing caches at the new depth (§3.2). This is a data-coverage change, not a strategy parameter. |
+| 1.0.3 | 2026-09-20 | Pre-backtest; spends no parameter budget. (1) The backtest universe is chosen point-in-time: for each date, top 150 by trailing 20-day dollar volume among current constituents using only data available then (§2.3), instead of today's saved snapshot. (2) Records what remains biased: survivorship in the membership list, sectors and security type from today's labels. (3) `refresh --backfill --all-constituents` added, resumable (§3.2). (4) Notes the IBKR volume undercount does not affect selection (150th name ~14x the floor); no config change. |
