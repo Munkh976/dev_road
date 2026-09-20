@@ -1,0 +1,504 @@
+symbol,name,as_of_date
+A,Agilent Technologies,2026-09-20
+AAPL,Apple Inc.,2026-09-20
+ABBV,AbbVie,2026-09-20
+ABNB,Airbnb,2026-09-20
+ABT,Abbott Laboratories,2026-09-20
+ACGL,Arch Capital Group,2026-09-20
+ACN,Accenture,2026-09-20
+ADBE,Adobe Inc.,2026-09-20
+ADI,Analog Devices,2026-09-20
+ADM,Archer Daniels Midland,2026-09-20
+ADP,Automatic Data Processing,2026-09-20
+ADSK,Autodesk,2026-09-20
+AEE,Ameren,2026-09-20
+AEP,American Electric Power,2026-09-20
+AES,AES Corporation,2026-09-20
+AFL,Aflac,2026-09-20
+AIG,American International Group,2026-09-20
+AIZ,Assurant,2026-09-20
+AJG,Arthur J. Gallagher & Co.,2026-09-20
+AKAM,Akamai Technologies,2026-09-20
+ALB,Albemarle Corporation,2026-09-20
+ALGN,Align Technology,2026-09-20
+ALL,Allstate,2026-09-20
+ALLE,Allegion,2026-09-20
+AMAT,Applied Materials,2026-09-20
+AMCR,Amcor,2026-09-20
+AMD,Advanced Micro Devices,2026-09-20
+AME,Ametek,2026-09-20
+AMGN,Amgen,2026-09-20
+AMP,Ameriprise Financial,2026-09-20
+AMT,American Tower,2026-09-20
+AMZN,Amazon,2026-09-20
+ANET,Arista Networks,2026-09-20
+AON,Aon plc,2026-09-20
+AOS,A. O. Smith,2026-09-20
+APA,APA Corporation,2026-09-20
+APD,Air Products,2026-09-20
+APH,Amphenol,2026-09-20
+APO,Apollo Global Management,2026-09-20
+APP,AppLovin,2026-09-20
+APTV,Aptiv,2026-09-20
+ARE,Alexandria Real Estate Equities,2026-09-20
+ARES,Ares Management,2026-09-20
+ATO,Atmos Energy,2026-09-20
+AVGO,Broadcom,2026-09-20
+AVY,Avery Dennison,2026-09-20
+AWK,American Water Works,2026-09-20
+AXON,Axon Enterprise,2026-09-20
+AXP,American Express,2026-09-20
+AZO,AutoZone,2026-09-20
+BA,Boeing,2026-09-20
+BAC,Bank of America,2026-09-20
+BALL,Ball Corporation,2026-09-20
+BAX,Baxter International,2026-09-20
+BBY,Best Buy,2026-09-20
+BDX,Becton Dickinson,2026-09-20
+BEN,Franklin Resources,2026-09-20
+BF.B,Brown–Forman,2026-09-20
+BG,Bunge Global,2026-09-20
+BIIB,Biogen,2026-09-20
+BKNG,Booking Holdings,2026-09-20
+BKR,Baker Hughes,2026-09-20
+BLDR,Builders FirstSource,2026-09-20
+BLK,BlackRock,2026-09-20
+BMY,Bristol Myers Squibb,2026-09-20
+BNY,BNY Mellon,2026-09-20
+BR,Broadridge Financial Solutions,2026-09-20
+BRK.B,Berkshire Hathaway,2026-09-20
+BRO,Brown & Brown,2026-09-20
+BSX,Boston Scientific,2026-09-20
+BX,Blackstone Inc.,2026-09-20
+BXP,"BXP, Inc.",2026-09-20
+C,Citigroup,2026-09-20
+CAH,Cardinal Health,2026-09-20
+CARR,Carrier Global,2026-09-20
+CASY,Casey's,2026-09-20
+CAT,Caterpillar Inc.,2026-09-20
+CB,Chubb Limited,2026-09-20
+CBOE,Cboe Global Markets,2026-09-20
+CBRE,CBRE Group,2026-09-20
+CCI,Crown Castle,2026-09-20
+CCL,Carnival Corporation,2026-09-20
+CDNS,Cadence Design Systems,2026-09-20
+CDW,CDW Corporation,2026-09-20
+CEG,Constellation Energy,2026-09-20
+CF,CF Industries,2026-09-20
+CFG,Citizens Financial Group,2026-09-20
+CHD,Church & Dwight,2026-09-20
+CHRW,C.H. Robinson,2026-09-20
+CHTR,Charter Communications,2026-09-20
+CI,Cigna,2026-09-20
+CIEN,Ciena,2026-09-20
+CINF,Cincinnati Financial,2026-09-20
+CL,Colgate-Palmolive,2026-09-20
+CLX,Clorox,2026-09-20
+CMCSA,Comcast,2026-09-20
+CME,CME Group,2026-09-20
+CMG,Chipotle Mexican Grill,2026-09-20
+CMI,Cummins,2026-09-20
+CMS,CMS Energy,2026-09-20
+CNC,Centene Corporation,2026-09-20
+CNP,CenterPoint Energy,2026-09-20
+COF,Capital One,2026-09-20
+COHR,Coherent Corp.,2026-09-20
+COIN,Coinbase,2026-09-20
+COO,Cooper Companies (The),2026-09-20
+COP,ConocoPhillips,2026-09-20
+COR,Cencora,2026-09-20
+COST,Costco,2026-09-20
+CPAY,Corpay,2026-09-20
+CPRT,Copart,2026-09-20
+CPT,Camden Property Trust,2026-09-20
+CRH,CRH plc,2026-09-20
+CRL,Charles River Laboratories,2026-09-20
+CRM,Salesforce,2026-09-20
+CRWD,CrowdStrike,2026-09-20
+CSCO,Cisco,2026-09-20
+CSGP,CoStar Group,2026-09-20
+CSX,CSX Corporation,2026-09-20
+CTAS,Cintas,2026-09-20
+CTSH,Cognizant,2026-09-20
+CTVA,Corteva,2026-09-20
+CVNA,Carvana,2026-09-20
+CVS,CVS Health,2026-09-20
+CVX,Chevron Corporation,2026-09-20
+D,Dominion Energy,2026-09-20
+DAL,Delta Air Lines,2026-09-20
+DASH,DoorDash,2026-09-20
+DD,DuPont,2026-09-20
+DDOG,Datadog,2026-09-20
+DE,Deere & Company,2026-09-20
+DECK,Deckers Brands,2026-09-20
+DELL,Dell Technologies,2026-09-20
+DG,Dollar General,2026-09-20
+DGX,Quest Diagnostics,2026-09-20
+DHI,D. R. Horton,2026-09-20
+DHR,Danaher Corporation,2026-09-20
+DIS,Walt Disney Company (The),2026-09-20
+DLR,Digital Realty,2026-09-20
+DLTR,Dollar Tree,2026-09-20
+DOC,Healthpeak Properties,2026-09-20
+DOV,Dover Corporation,2026-09-20
+DOW,Dow Inc.,2026-09-20
+DPZ,Domino's,2026-09-20
+DRI,Darden Restaurants,2026-09-20
+DTE,DTE Energy,2026-09-20
+DUK,Duke Energy,2026-09-20
+DVA,DaVita,2026-09-20
+DVN,Devon Energy,2026-09-20
+DXCM,Dexcom,2026-09-20
+EBAY,eBay Inc.,2026-09-20
+ECHO,EchoStar,2026-09-20
+ECL,Ecolab,2026-09-20
+ED,Consolidated Edison,2026-09-20
+EFX,Equifax,2026-09-20
+EG,Everest Group,2026-09-20
+EIX,Edison International,2026-09-20
+EL,Estée Lauder Companies (The),2026-09-20
+ELV,Elevance Health,2026-09-20
+EME,Emcor,2026-09-20
+EMR,Emerson Electric,2026-09-20
+EOG,EOG Resources,2026-09-20
+EQIX,Equinix,2026-09-20
+EQT,EQT Corporation,2026-09-20
+ERIE,Erie Indemnity,2026-09-20
+ES,Eversource Energy,2026-09-20
+ESS,Essex Property Trust,2026-09-20
+ETN,Eaton Corporation,2026-09-20
+ETR,Entergy,2026-09-20
+EVRG,Evergy,2026-09-20
+EW,Edwards Lifesciences,2026-09-20
+EXC,Exelon,2026-09-20
+EXE,Expand Energy,2026-09-20
+EXPD,Expeditors International,2026-09-20
+EXPE,Expedia Group,2026-09-20
+EXR,Extra Space Storage,2026-09-20
+F,Ford Motor Company,2026-09-20
+FANG,Diamondback Energy,2026-09-20
+FAST,Fastenal,2026-09-20
+FCX,Freeport-McMoRan,2026-09-20
+FDS,FactSet,2026-09-20
+FDX,FedEx,2026-09-20
+FDXF,FedEx Freight,2026-09-20
+FE,FirstEnergy,2026-09-20
+FERG,Ferguson Enterprises,2026-09-20
+FFIV,"F5, Inc.",2026-09-20
+FICO,Fair Isaac,2026-09-20
+FIS,Fidelity National Information Services,2026-09-20
+FISV,Fiserv,2026-09-20
+FITB,Fifth Third Bancorp,2026-09-20
+FIX,Comfort Systems USA,2026-09-20
+FLEX,Flex Ltd.,2026-09-20
+FOX,Fox Corporation (Class B),2026-09-20
+FOXA,Fox Corporation (Class A),2026-09-20
+FRT,Federal Realty Investment Trust,2026-09-20
+FSLR,First Solar,2026-09-20
+FTNT,Fortinet,2026-09-20
+FTV,Fortive,2026-09-20
+GD,General Dynamics,2026-09-20
+GDDY,GoDaddy,2026-09-20
+GE,GE Aerospace,2026-09-20
+GEHC,GE HealthCare,2026-09-20
+GEN,Gen Digital,2026-09-20
+GEV,GE Vernova,2026-09-20
+GILD,Gilead Sciences,2026-09-20
+GIS,General Mills,2026-09-20
+GL,Globe Life,2026-09-20
+GLW,Corning Inc.,2026-09-20
+GM,General Motors,2026-09-20
+GNRC,Generac,2026-09-20
+GOOG,Alphabet Inc. (Class C),2026-09-20
+GOOGL,Alphabet Inc. (Class A),2026-09-20
+GPC,Genuine Parts Company,2026-09-20
+GPN,Global Payments,2026-09-20
+GRMN,Garmin,2026-09-20
+GS,Goldman Sachs,2026-09-20
+GWW,W. W. Grainger,2026-09-20
+HAL,Halliburton,2026-09-20
+HAS,Hasbro,2026-09-20
+HBAN,Huntington Bancshares,2026-09-20
+HCA,HCA Healthcare,2026-09-20
+HD,Home Depot (The),2026-09-20
+HIG,Hartford (The),2026-09-20
+HII,Huntington Ingalls Industries,2026-09-20
+HLT,Hilton Worldwide,2026-09-20
+HON,Honeywell Technologies,2026-09-20
+HONA,Honeywell Aerospace,2026-09-20
+HOOD,Robinhood Markets,2026-09-20
+HPE,Hewlett Packard Enterprise,2026-09-20
+HPQ,HP Inc.,2026-09-20
+HRL,Hormel Foods,2026-09-20
+HSIC,Henry Schein,2026-09-20
+HST,Host Hotels & Resorts,2026-09-20
+HSY,Hershey Company (The),2026-09-20
+HUBB,Hubbell Incorporated,2026-09-20
+HUM,Humana,2026-09-20
+HWM,Howmet Aerospace,2026-09-20
+IBKR,Interactive Brokers,2026-09-20
+IBM,IBM,2026-09-20
+ICE,Intercontinental Exchange,2026-09-20
+IDXX,Idexx Laboratories,2026-09-20
+IEX,IDEX Corporation,2026-09-20
+IFF,International Flavors & Fragrances,2026-09-20
+INCY,Incyte,2026-09-20
+INTC,Intel,2026-09-20
+INTU,Intuit,2026-09-20
+INVH,Invitation Homes,2026-09-20
+IP,International Paper,2026-09-20
+IQV,IQVIA,2026-09-20
+IR,Ingersoll Rand,2026-09-20
+IRM,Iron Mountain,2026-09-20
+ISRG,Intuitive Surgical,2026-09-20
+IT,Gartner,2026-09-20
+ITW,Illinois Tool Works,2026-09-20
+IVZ,Invesco,2026-09-20
+J,Jacobs Solutions,2026-09-20
+JBHT,J.B. Hunt,2026-09-20
+JBL,Jabil,2026-09-20
+JCI,Johnson Controls,2026-09-20
+JKHY,Jack Henry & Associates,2026-09-20
+JNJ,Johnson & Johnson,2026-09-20
+JPM,JPMorgan Chase,2026-09-20
+KDP,Keurig Dr Pepper,2026-09-20
+KEY,KeyCorp,2026-09-20
+KEYS,Keysight Technologies,2026-09-20
+KHC,Kraft Heinz,2026-09-20
+KIM,Kimco Realty,2026-09-20
+KKR,KKR & Co.,2026-09-20
+KLAC,KLA Corporation,2026-09-20
+KMB,Kimberly-Clark,2026-09-20
+KMI,Kinder Morgan,2026-09-20
+KO,Coca-Cola Company (The),2026-09-20
+KR,Kroger,2026-09-20
+KVUE,Kenvue,2026-09-20
+L,Loews Corporation,2026-09-20
+LDOS,Leidos,2026-09-20
+LEN,Lennar,2026-09-20
+LH,Labcorp,2026-09-20
+LHX,L3Harris,2026-09-20
+LII,Lennox International,2026-09-20
+LIN,Linde plc,2026-09-20
+LITE,Lumentum,2026-09-20
+LLY,Lilly (Eli),2026-09-20
+LMT,Lockheed Martin,2026-09-20
+LNT,Alliant Energy,2026-09-20
+LOW,Lowe's,2026-09-20
+LRCX,Lam Research,2026-09-20
+LULU,Lululemon Athletica,2026-09-20
+LUV,Southwest Airlines,2026-09-20
+LVS,Las Vegas Sands,2026-09-20
+LYB,LyondellBasell,2026-09-20
+LYV,Live Nation Entertainment,2026-09-20
+MA,Mastercard,2026-09-20
+MAA,Mid-America Apartment Communities,2026-09-20
+MAR,Marriott International,2026-09-20
+MAS,Masco,2026-09-20
+MCD,McDonald's,2026-09-20
+MCHP,Microchip Technology,2026-09-20
+MCK,McKesson Corporation,2026-09-20
+MCO,Moody's Corporation,2026-09-20
+MDLZ,Mondelez International,2026-09-20
+MDT,Medtronic,2026-09-20
+MET,MetLife,2026-09-20
+META,Meta Platforms,2026-09-20
+MGM,MGM Resorts,2026-09-20
+MKC,McCormick & Company,2026-09-20
+MLM,Martin Marietta Materials,2026-09-20
+MMM,3M,2026-09-20
+MNST,Monster Beverage,2026-09-20
+MO,Altria,2026-09-20
+MOS,Mosaic Company (The),2026-09-20
+MPC,Marathon Petroleum,2026-09-20
+MPWR,Monolithic Power Systems,2026-09-20
+MRK,Merck & Co.,2026-09-20
+MRNA,Moderna,2026-09-20
+MRSH,Marsh McLennan,2026-09-20
+MRVL,Marvell Technology,2026-09-20
+MS,Morgan Stanley,2026-09-20
+MSCI,MSCI,2026-09-20
+MSFT,Microsoft,2026-09-20
+MSI,Motorola Solutions,2026-09-20
+MTB,M&T Bank,2026-09-20
+MTD,Mettler Toledo,2026-09-20
+MU,Micron Technology,2026-09-20
+NCLH,Norwegian Cruise Line Holdings,2026-09-20
+NDAQ,"Nasdaq, Inc.",2026-09-20
+NDSN,Nordson Corporation,2026-09-20
+NEE,NextEra Energy,2026-09-20
+NEM,Newmont,2026-09-20
+NFLX,Netflix,2026-09-20
+NI,NiSource,2026-09-20
+NKE,"Nike, Inc.",2026-09-20
+NOC,Northrop Grumman,2026-09-20
+NOW,ServiceNow,2026-09-20
+NRG,NRG Energy,2026-09-20
+NSC,Norfolk Southern,2026-09-20
+NTAP,NetApp,2026-09-20
+NTRS,Northern Trust,2026-09-20
+NUE,Nucor,2026-09-20
+NVDA,Nvidia,2026-09-20
+NVR,"NVR, Inc.",2026-09-20
+NWS,News Corp (Class B),2026-09-20
+NWSA,News Corp (Class A),2026-09-20
+NXPI,NXP Semiconductors,2026-09-20
+O,Realty Income,2026-09-20
+ODFL,Old Dominion,2026-09-20
+OKE,Oneok,2026-09-20
+OMC,Omnicom Group,2026-09-20
+ON,ON Semiconductor,2026-09-20
+ORCL,Oracle Corporation,2026-09-20
+ORLY,O'Reilly Automotive,2026-09-20
+OTIS,Otis Worldwide,2026-09-20
+OXY,Occidental Petroleum,2026-09-20
+PANW,Palo Alto Networks,2026-09-20
+PAYX,Paychex,2026-09-20
+PCAR,Paccar,2026-09-20
+PCG,PG&E Corporation,2026-09-20
+PEG,Public Service Enterprise Group,2026-09-20
+PEP,PepsiCo,2026-09-20
+PFE,Pfizer,2026-09-20
+PFG,Principal Financial Group,2026-09-20
+PG,Procter & Gamble,2026-09-20
+PGR,Progressive Corporation,2026-09-20
+PH,Parker Hannifin,2026-09-20
+PHM,PulteGroup,2026-09-20
+PKG,Packaging Corporation of America,2026-09-20
+PLD,Prologis,2026-09-20
+PLTR,Palantir Technologies,2026-09-20
+PM,Philip Morris International,2026-09-20
+PNC,PNC Financial Services,2026-09-20
+PNR,Pentair,2026-09-20
+PNW,Pinnacle West Capital,2026-09-20
+PODD,Insulet Corporation,2026-09-20
+PPG,PPG Industries,2026-09-20
+PPL,PPL Corporation,2026-09-20
+PRU,Prudential Financial,2026-09-20
+PSA,Public Storage,2026-09-20
+PSKY,Paramount Skydance Corporation,2026-09-20
+PSX,Phillips 66,2026-09-20
+PTC,PTC Inc.,2026-09-20
+PWR,Quanta Services,2026-09-20
+PYPL,PayPal,2026-09-20
+Q,Qnity Electronics,2026-09-20
+QCOM,Qualcomm,2026-09-20
+RCL,Royal Caribbean Group,2026-09-20
+RDDT,Reddit,2026-09-20
+REG,Regency Centers,2026-09-20
+REGN,Regeneron Pharmaceuticals,2026-09-20
+RF,Regions Financial Corporation,2026-09-20
+RJF,Raymond James Financial,2026-09-20
+RL,Ralph Lauren Corporation,2026-09-20
+RMD,ResMed|,2026-09-20
+ROK,Rockwell Automation,2026-09-20
+ROL,"Rollins, Inc.",2026-09-20
+ROP,Roper Technologies,2026-09-20
+ROST,Ross Stores,2026-09-20
+RSG,Republic Services,2026-09-20
+RTX,RTX Corporation,2026-09-20
+RVTY,Revvity,2026-09-20
+SBAC,SBA Communications,2026-09-20
+SBUX,Starbucks,2026-09-20
+SCHW,Charles Schwab Corporation,2026-09-20
+SHW,Sherwin-Williams,2026-09-20
+SJM,J.M. Smucker Company (The),2026-09-20
+SLB,Schlumberger,2026-09-20
+SMCI,Supermicro,2026-09-20
+SNA,Snap-on,2026-09-20
+SNDK,Sandisk,2026-09-20
+SNPS,Synopsys,2026-09-20
+SO,Southern Company,2026-09-20
+SOLV,Solventum,2026-09-20
+SPG,Simon Property Group,2026-09-20
+SPGI,S&P Global,2026-09-20
+SRE,Sempra,2026-09-20
+STE,Steris,2026-09-20
+STLD,Steel Dynamics,2026-09-20
+STT,State Street Corporation,2026-09-20
+STX,Seagate Technology,2026-09-20
+STZ,Constellation Brands,2026-09-20
+SW,Smurfit Westrock,2026-09-20
+SWK,Stanley Black & Decker,2026-09-20
+SWKS,Skyworks Solutions,2026-09-20
+SYF,Synchrony Financial,2026-09-20
+SYK,Stryker Corporation,2026-09-20
+SYY,Sysco,2026-09-20
+T,AT&T,2026-09-20
+TAP,Molson Coors Beverage Company,2026-09-20
+TDG,TransDigm Group,2026-09-20
+TDY,Teledyne Technologies,2026-09-20
+TECH,Bio-Techne,2026-09-20
+TEL,TE Connectivity,2026-09-20
+TER,Teradyne,2026-09-20
+TFC,Truist Financial,2026-09-20
+TGT,Target Corporation,2026-09-20
+TJX,TJX Companies,2026-09-20
+TKO,TKO Group Holdings,2026-09-20
+TMO,Thermo Fisher Scientific,2026-09-20
+TMUS,T-Mobile US,2026-09-20
+TPL,Texas Pacific Land Corporation,2026-09-20
+TPR,"Tapestry, Inc.",2026-09-20
+TRGP,Targa Resources,2026-09-20
+TRMB,Trimble Inc.,2026-09-20
+TROW,T. Rowe Price,2026-09-20
+TRV,Travelers Companies (The),2026-09-20
+TSCO,Tractor Supply,2026-09-20
+TSLA,"Tesla, Inc.",2026-09-20
+TSN,Tyson Foods,2026-09-20
+TT,Trane Technologies,2026-09-20
+TTD,Trade Desk (The),2026-09-20
+TTWO,Take-Two Interactive,2026-09-20
+TXN,Texas Instruments,2026-09-20
+TXT,Textron,2026-09-20
+TYL,Tyler Technologies,2026-09-20
+UAL,United Airlines Holdings,2026-09-20
+UBER,Uber,2026-09-20
+UDR,"UDR, Inc.",2026-09-20
+UHS,Universal Health Services,2026-09-20
+ULTA,Ulta Beauty,2026-09-20
+UNH,UnitedHealth Group,2026-09-20
+UNP,Union Pacific Corporation,2026-09-20
+UPS,United Parcel Service,2026-09-20
+URI,United Rentals,2026-09-20
+USB,U.S. Bancorp,2026-09-20
+V,Visa Inc.,2026-09-20
+VEEV,Veeva Systems,2026-09-20
+VICI,Vici Properties,2026-09-20
+VLO,Valero Energy,2026-09-20
+VLTO,Veralto,2026-09-20
+VMC,Vulcan Materials Company,2026-09-20
+VMRK,Vivmark Residential,2026-09-20
+VRSK,Verisk Analytics,2026-09-20
+VRSN,Verisign,2026-09-20
+VRT,Vertiv,2026-09-20
+VRTX,Vertex Pharmaceuticals,2026-09-20
+VST,Vistra Corp.,2026-09-20
+VTR,Ventas,2026-09-20
+VTRS,Viatris,2026-09-20
+VZ,Verizon,2026-09-20
+WAB,Wabtec,2026-09-20
+WAT,Waters Corporation,2026-09-20
+WBD,Warner Bros. Discovery,2026-09-20
+WDAY,"Workday, Inc.",2026-09-20
+WDC,Western Digital,2026-09-20
+WEC,WEC Energy Group,2026-09-20
+WELL,Welltower,2026-09-20
+WFC,Wells Fargo,2026-09-20
+WM,Waste Management,2026-09-20
+WMB,Williams Companies,2026-09-20
+WMT,Walmart,2026-09-20
+WRB,W. R. Berkley Corporation,2026-09-20
+WSM,"Williams-Sonoma, Inc.",2026-09-20
+WST,West Pharmaceutical Services,2026-09-20
+WTW,Willis Towers Watson,2026-09-20
+WY,Weyerhaeuser,2026-09-20
+WYNN,Wynn Resorts,2026-09-20
+XEL,Xcel Energy,2026-09-20
+XOM,ExxonMobil,2026-09-20
+XYL,Xylem Inc.,2026-09-20
+XYZ,"Block, Inc.",2026-09-20
+YUM,Yum! Brands,2026-09-20
+ZBH,Zimmer Biomet,2026-09-20
+ZBRA,Zebra Technologies,2026-09-20
+ZTS,Zoetis,2026-09-20
