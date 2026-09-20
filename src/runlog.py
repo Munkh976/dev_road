@@ -33,9 +33,12 @@ def start_run(conn: sqlite3.Connection, cfg: Config, run_type: str, notes: str) 
 def finish_run(
     conn: sqlite3.Connection, run_id: str, status: str,
     halt_reason: str | None = None, error: str | None = None,
+    notes: str | None = None,
 ) -> None:
+    """`notes`, if given, replaces the note written at start (e.g. a verdict)."""
     with conn:
         conn.execute(
-            "UPDATE runs SET finished_at=?, status=?, halt_reason=?, error=? WHERE run_id=?",
-            (datetime.now(timezone.utc).isoformat(), status, halt_reason, error, run_id),
+            "UPDATE runs SET finished_at=?, status=?, halt_reason=?, error=?, "
+            "notes=COALESCE(?, notes) WHERE run_id=?",
+            (datetime.now(timezone.utc).isoformat(), status, halt_reason, error, notes, run_id),
         )

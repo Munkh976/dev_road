@@ -81,7 +81,7 @@ exactly one place. `BrokerInterface` deliberately has no
 
 ## Current status
 
-**Built and tested (268 tests passing):**
+**Built and tested (335 tests passing):**
 
 - `src/config.py` — typed pydantic loader, safety validators
 - `db/schema.sql` — 15 tables, 4 views (adds `contract_info`, `universe_snapshots`)
@@ -103,6 +103,10 @@ exactly one place. `BrokerInterface` deliberately has no
   on a stale SPY. Run against the real cache once.
 - `src/strategy/rules.py` — E1–E9, X1–X4, sizing (`size_new_positions` enforces E7;
   bounds hold with few names, see spec §8)
+- `src/backtest/walkforward.py` — walk-forward engine (spec 12.1), `check_acceptance`
+  A1–A6, report. Tested on synthetic markets only (hand-checked trades, whole-engine
+  look-ahead, deliberate breaks); **never run on real data yet**
+- `src/data/universe.py` also has `point_in_time_universe` (spec 2.3), used by the backtest
 - `src/runlog.py` — shared `runs` row start/finish with the config hash
 - `src/execution/broker.py` — interface and dataclasses
 - `datasette/metadata.json` — 10 canned queries, all verified against schema
@@ -115,7 +119,6 @@ exactly one place. `BrokerInterface` deliberately has no
 
 - `src/risk/engine.py` — 14 checks
 - `src/ai/veto.py` — prompt and schema written, call not wired
-- `src/backtest/walkforward.py` — walk-forward, acceptance gate
 - `src/execution/ibkr.py` — ib_async implementation
 - `src/execution/approve.py`, `src/reporting/weekly.py`
 
@@ -136,8 +139,9 @@ Each step is useless without the one before it.
 6. ~~IBKR fetch~~ ✅ (mocked; first real run is a manual step)
 7. ~~Signals~~ ✅ (explicit look-ahead tests)
 8. ~~Rules + sizing~~ ✅ (moved ahead of the backtest, which needs them)
-9. **Backtest** — walk-forward, out-of-sample only ← next
-10. **Acceptance gate (A1–A6)** — **if A1 fails, stop and buy SPY**
+9. ~~Backtest engine~~ ✅ (synthetic data only; the first real run is a manual step)
+10. **Acceptance gate (A1–A6)** — run the backtest on the full cache, review, then
+    **if A1 fails, stop and buy SPY** ← next
 11. Risk engine
 12. AI veto layer
 13. Report + approval UI

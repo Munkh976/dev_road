@@ -4,7 +4,7 @@
 **Capital:** $15,000 (paper first)
 **Owner:** [you]
 **Created:** 2026-09-19
-**Version:** 1.0.4
+**Version:** 1.0.5
 
 > This document defines the strategy completely enough to backtest without
 > further decisions. If you find yourself making a judgment call while
@@ -176,6 +176,12 @@ rediscovered later:
    the past. The error is small for large caps and its direction is not known.
 3. **Security type is today's label**, for the same reason. It is static per
    security in practice, so this is the least worrying of the three.
+4. **Liquidity filters run on adjusted prices.** The cache holds
+   `ADJUSTED_LAST`, which is scaled back through every dividend and split. In
+   old years the `$10` price floor and dollar volume (adjusted close x volume)
+   therefore read lower than what actually traded. The ranking is barely
+   affected, since every name is scaled by its own factor, but a stock whose
+   real price was just over $10 in 2006 can be filtered out.
 
 **IBKR volume undercount does not affect selection.** IBKR daily volume can
 undercount consolidated volume. Selection is a *ranking* by dollar volume, so a
@@ -540,6 +546,66 @@ COSTS:         commission  $0.005/share, $1.00 minimum
 BENCHMARK:     SPY buy-and-hold, same costs
 ```
 
+### 12.1 How the engine implements this protocol
+
+`src/backtest/walkforward.py`. Every reading below is a judgment call the
+protocol above leaves open, made once, here, before any real result exists.
+
+**Timing.** Signals are computed at the close of the last trading day of each
+week. Orders decided then fill at the **next bar's open**; nothing fills on the
+bar whose close produced the signal. Exits (X1-X4) are decided every week.
+Entries (E1-E9) and the drift rebalance (§9, +/-25% off target) are decided only
+when the next fill is the first weekly fill of a calendar month (the first
+Monday, or the first trading day of the first trading week). A name stopped out
+in a week is not a candidate for entry in the same week. A fill with no bar to
+trade on (a halted name) does not happen and is retried the following week; a
+bar is never invented for it.
+
+**Continuous simulation, out-of-sample scoring.** Nothing is fitted, so
+in-sample years cannot be tuned on and every parameter is identical in every
+window. The strategy is simulated in one continuous run from the first date
+signals exist; in-sample years exist only so the first scored window starts from
+a realistic book. Only the out-of-sample windows are reported. Starting each
+window flat would charge every year a ramp-up (E9 builds the book two names a
+month, cash earns 0%) that live trading pays once.
+
+**Windows.** The first out-of-sample window begins `in_sample_years` (3) after
+the first date signals exist, then one window per `step_months` (12), which must
+equal `out_of_sample_years` x 12 (checked, else windows overlap or leave gaps).
+Windows are anchored at the start of the data and never trimmed to make the last
+one whole: trimming the front would drop 2008 (§3.2). A last window shorter than
+a year is kept and flagged partial. `backtest.start` is the earliest date an
+out-of-sample window may begin, a check on the protocol, not a way to move the
+period (see "Forbidden"). With data from 2004-09 the first window begins about
+2008-10.
+
+**Costs.** Per side: commission `max(shares x $0.005, $1.00)`, plus slippage
+(5 bps) plus **half** of the 3 bps spread, of the traded value. A round trip
+crosses the spread once. The benchmark, SPY bought with the same capital at the
+first out-of-sample fill and held, pays the same costs. A buy never spends more
+cash than is held (no leverage): shares are cut back to what cash plus costs
+allows. Cash earns 0%, which slightly understates the strategy in risk-off
+periods. The report says so.
+
+**Statistics.** CAGR from calendar days / 365.25. Sharpe is the mean over the
+standard deviation of daily returns x sqrt(252), risk-free rate 0 (cash earns 0%
+on both sides). Turnover is half the traded value (buys + sells) over average
+equity, annualized: replacing the whole book once is 100%. Worst rolling 12
+months is over 252 trading days on the chained out-of-sample curve. A6 is the
+best window's excess return over the sum of all windows' excess returns; when
+that sum is not positive there is no edge to apportion and A6 **fails**. Any
+criterion that cannot be computed fails.
+
+**Point-in-time universe daily, live quarterly.** A held name that drops out of
+the daily point-in-time top 150 has no rank that day and exits under X1
+(unevaluable -> exit, §6). Live, a held name stays in the quarterly snapshot for
+the quarter. The backtest can therefore churn somewhat more than live on names
+near the liquidity boundary. It errs pessimistic.
+
+**Left out, and printed in every report:** E5 always passes; the risk engine's
+order-level checks (order size, order count, drawdown halt) are not applied;
+sectors, security type and index membership are today's (§2.3).
+
 **Parameter budget: 5 changes, total, logged.**
 
 Every time a parameter is adjusted after seeing results, some out-of-sample
@@ -604,3 +670,4 @@ The third one is the one that will actually happen. Watch for it.
 | 1.0.2 | 2026-09-20 | Pre-backtest; spends no parameter budget. (1) `days_listed` counts calendar days, not bars (§2.2). (2) `data.history_years` 15 -> 22 so the backtest can reach the 2008-09 crash, with the survivorship-bias trade-off recorded, and `refresh --backfill` added to refetch existing caches at the new depth (§3.2). This is a data-coverage change, not a strategy parameter. |
 | 1.0.3 | 2026-09-20 | Pre-backtest; spends no parameter budget. (1) The backtest universe is chosen point-in-time: for each date, top 150 by trailing 20-day dollar volume among current constituents using only data available then (§2.3), instead of today's saved snapshot. (2) Records what remains biased: survivorship in the membership list, sectors and security type from today's labels. (3) `refresh --backfill --all-constituents` added, resumable (§3.2). (4) Notes the IBKR volume undercount does not affect selection (150th name ~14x the floor); no config change. |
 | 1.0.4 | 2026-09-20 | Pre-backtest; spends no parameter budget. Rules and sizing implemented, which forced these readings into the spec: E5 always passes in backtests; E7 enforced after sizing, smallest new name first; E8 checked at `max_position_weight`, unknown sector blocks; greedy slot allocation in rank order; exit-rule reporting priority X2>X3>X4>X1; unevaluable exit checks fail closed. **§8 correction:** "clip then renormalize" breaks the 20% cap with fewer than five names (two names -> 50% each); replaced by pin-at-bound-and-redistribute so the bounds always hold (§8). |
+| 1.0.5 | 2026-09-20 | Pre-backtest; spends no parameter budget. Backtest engine implemented; the protocol's open choices are fixed in §12.1: signals at the weekly close and fills at the next open, monthly entries and weekly exits, continuous simulation with out-of-sample-only scoring, windows anchored to the data start with a flagged partial last window, half the spread charged per side, turnover and Sharpe definitions, A6 and uncomputable criteria fail closed, no same-week rebuy of a stopped-out name, and the daily-vs-quarterly universe asymmetry (pessimistic for the backtest). |

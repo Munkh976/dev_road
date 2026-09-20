@@ -16,8 +16,12 @@ from __future__ import annotations
 import csv
 import logging
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
+
+import numpy as np
+import pandas as pd
 
 from src.config import Config
 from src.data.cache import PriceCache
@@ -256,6 +260,69 @@ def select_universe(
         for i, r in enumerate(passing[: u.max_symbols], start=1)
     ]
     return UniverseSelection(chosen, data_as_of, dropped)
+
+
+# ------------------------------------------------------- point-in-time (backtest)
+
+
+def point_in_time_universe(
+    closes: pd.DataFrame,
+    volumes: pd.DataFrame,
+    cfg: Config,
+    allowed: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """Who was in the universe on each date, from data available on that date.
+
+    Spec 2.3. The saved snapshot is today's top 150 by dollar volume, which is
+    hindsight: stocks are big today largely because they went up. Here, for each
+    date D: the section 2 filters as of D (20-day average dollar volume,
+    price, calendar days since the first cached bar, a bar on D), then the top
+    `max_symbols` by dollar volume, ties broken by symbol.
+
+    Row D depends only on rows <= D: rolling windows are trailing, and
+    `days_listed` needs only the first bar, which for any D on or after it is
+    fixed. A window touching a missing bar is NaN and fails the filter (a halted
+    name is not liquid on paper).
+
+    `allowed` is the set of symbols whose security type passes (today's label;
+    None = no type filter). The benchmark column, if present, is never a member.
+    Returns a bool dates x symbols frame.
+    """
+    u = cfg.universe
+    cols = sorted(c for c in closes.columns if c != u.benchmark)
+    px, vol = closes[cols], volumes.reindex(index=closes.index, columns=cols)
+
+    window = u.adv_window_days
+    adv = (px * vol * cfg.data.volume_multiplier).rolling(window, min_periods=window).mean()
+
+    first_bar = px.notna().idxmax().where(px.notna().any())          # NaT if never traded
+    dates = px.index.values.astype("datetime64[D]")[:, None]
+    listed = (dates - first_bar.values.astype("datetime64[D]")[None, :]) / np.timedelta64(1, "D")
+
+    passes = (
+        (adv >= u.min_dollar_volume_20d)
+        & (px >= u.min_price)
+        & pd.DataFrame(listed >= u.min_days_listed, index=px.index, columns=cols)
+    )
+    if allowed is not None:
+        allowed = set(allowed)
+        passes = passes & pd.Series({c: c in allowed for c in cols})
+    rank = adv.where(passes).rank(axis=1, ascending=False, method="first")
+    return (rank <= u.max_symbols).astype(bool)
+
+
+def todays_universe(
+    closes: pd.DataFrame, volumes: pd.DataFrame, cfg: Config,
+    allowed: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """The membership of the LAST date, applied to every date.
+
+    This is the hindsight universe that `point_in_time_universe` replaces. It
+    exists so the backtest can be broken on purpose and shown to look
+    different; nothing that reports results should use it.
+    """
+    pit = point_in_time_universe(closes, volumes, cfg, allowed)
+    return pd.DataFrame({c: bool(pit[c].iloc[-1]) for c in pit.columns}, index=pit.index)
 
 
 # ---------------------------------------------------------------- snapshot
