@@ -4,7 +4,7 @@
 **Capital:** $15,000 (paper first)
 **Owner:** [you]
 **Created:** 2026-09-19
-**Version:** 1.0.1
+**Version:** 1.0.2
 
 > This document defines the strategy completely enough to backtest without
 > further decisions. If you find yourself making a judgment call while
@@ -53,7 +53,7 @@ outcome and costs nothing but time.
 START:   S&P 500 constituents (point-in-time if available; see §12)
 FILTER:  avg_dollar_volume_20d  >= $20,000,000
          price                   >= $10.00
-         days_listed             >= 400
+         days_listed             >= 400   (calendar days, not bars; see §2.2)
          security_type           == common stock (no ADRs, no REITs, no trusts)
 EXCLUDE: tickers with a pending merger/acquisition (AI veto layer, §7)
 CAP:     top 150 by 20-day average dollar volume
@@ -101,10 +101,15 @@ Filter definitions, so they are not judgment calls at implementation time:
   over the last 20 cached bars (`universe.adv_window_days`). Fewer than 20
   bars fails the filter.
 - `price` = last cached close.
-- `days_listed` = calendar days from the first cached bar to the last cached
-  bar. IBKR contract details carry no listing date; the first bar is the
-  proxy. History is capped at 15 years, so anything older reads as 15 years,
-  which is fine for a `>= 400` test.
+- `days_listed` = **calendar days** (not trading bars) from the first cached
+  bar to the last cached bar. IBKR contract details carry no listing date; the
+  first bar is the proxy. History is capped at `data.history_years`, so
+  anything older reads as that many years, which is fine for a `>= 400` test.
+  400 calendar days is ~275 trading bars, slightly under the 300 bars §3
+  requires for signals. That is harmless: a symbol with too little history gets
+  NaN signals and is left out of the ranking (§4), so this filter only spares
+  the ranking a name that could not be scored anyway. The first rebuild dropped
+  three names on it, all recent spin-offs (FDXF, HONA, Q).
 - `security_type` = IBKR `ContractDetails.stockType`. Keep `COMMON`; REIT,
   ETF and ADR (and anything else) are dropped. A symbol with no contract
   details is dropped (fail closed).
@@ -475,3 +480,4 @@ The third one is the one that will actually happen. Watch for it.
 |---|---|---|
 | 1.0.0 | 2026-09-19 | Initial specification, pre-backtest |
 | 1.0.1 | 2026-09-19 | Pre-backtest; spends no parameter budget. Settles three implementation gaps: (1) S&P 500 list is a committed CSV with a manual quarterly update script, warn-only staleness check, `BRK.B` -> `BRK B` mapping (§2.1); (2) universe is rebuilt quarterly from all constituents and saved as a queryable snapshot, weekly refresh fetches only the saved 150 + SPY, sector comes from IBKR contract details, filter definitions made explicit (§2.2); (3) adjusted-price restatement is detected by overlap comparison at 0.1% and answered with a full refetch, with `endDateTime` empty (§3.1). Adds config keys only: `universe.constituents_path`, `constituents_max_age_days`, `adv_window_days`, `data.overlap_days`, `restatement_tolerance`, `volume_multiplier`. No strategy parameter changed. |
+| 1.0.2 | 2026-09-20 | Pre-backtest; spends no parameter budget. Clarifies that `days_listed` counts calendar days, not bars (§2.2). |
