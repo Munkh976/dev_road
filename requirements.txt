@@ -13,7 +13,7 @@ ib_async>=1.0          # maintained fork of ib_insync (archived 2024)
 
 # ---- operational store + approval UI ------------------------------------
 sqlite-utils>=3.36
-datasette>=0.64
+datasette>=0.65.5,<1.0   # patched 0.65.x; see docs/datasette_patterns.md
 
 # ---- backtesting ---------------------------------------------------------
 vectorbt>=0.26

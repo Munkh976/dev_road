@@ -4,6 +4,14 @@ Three patterns, extracted from a prior project and checked against Datasette
 0.65.5 (the installed version). Single user on localhost: no auth, sessions,
 roles or deployment config belongs here.
 
+**Version pin:** `requirements.txt` holds `datasette>=0.65.5,<1.0`. 0.65.5 is
+the patched 0.65.x release (it includes the September 2026 security fixes), so
+do not go lower. The ceiling is because `approval.py` and `host_guard.py`
+target the 0.65 plugin hooks and write APIs (`register_routes`,
+`asgi_wrapper`, `execute_write_fn`, `skip_csrf` behaviour), which 1.0 changes.
+Moving to 1.x is a deliberate migration with its own test pass, not a
+`pip install -U`.
+
 Run command (from `CLAUDE.md`):
 
 ```
