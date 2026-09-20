@@ -121,10 +121,13 @@ async def approve_proposal(request, datasette):
 
     # An override is approving something the system flagged, or rejecting
     # something it proposed cleanly. Both are deviations worth counting.
+    # Rejecting a proposal the risk engine already rejected is following the
+    # system, not deviating from it, so it is never an override.
     ai_flagged = proposal["ai_flag"] == 1
+    risk_rejected = proposal["risk_status"] == "REJECT"
     override = int(
         (decision == "APPROVE" and ai_flagged)
-        or (decision == "REJECT" and not ai_flagged)
+        or (decision == "REJECT" and not ai_flagged and not risk_rejected)
         or (decision == "MODIFY")
     )
 

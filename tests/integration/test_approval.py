@@ -120,17 +120,24 @@ async def test_approve_risk_rejected_is_403(ds, db_path):
     assert _n_approvals(db_path) == 0
 
 
-async def test_reject_risk_rejected_is_allowed(ds, db_path):
+async def test_reject_risk_rejected_is_allowed_and_not_an_override(ds, db_path):
     _add_proposal(db_path, "p1", risk_status="REJECT")
-    # Rejecting something the system also flagged (risk REJECT is not an
-    # ai_flag) counts as an override, so a reason is required.
-    resp = await _post(
-        ds, "/-/approve",
-        {"proposal_id": "p1", "decision": "REJECT", "override_reason": "agree"},
-    )
+    # Agreeing with the risk engine is following the system: no reason needed.
+    resp = await _post(ds, "/-/approve", {"proposal_id": "p1", "decision": "REJECT"})
     assert resp.status_code == 200
+    assert resp.json()["override"] is False
     assert _status(db_path, "p1") == "REJECTED"
-    assert _n_approvals(db_path, "p1") == 1
+    assert _q(db_path, "SELECT override, override_reason FROM approvals") == [(0, None)]
+
+
+async def test_reject_clean_proposal_still_needs_a_reason(ds, db_path):
+    # Guards against over-loosening: rejecting a clean, unflagged proposal is
+    # still a deviation from the system.
+    _add_proposal(db_path, "p1", risk_status="PASS", ai_flag=0)
+    resp = await _post(ds, "/-/approve", {"proposal_id": "p1", "decision": "REJECT"})
+    assert resp.status_code == 400
+    assert _status(db_path, "p1") == "PENDING_APPROVAL"
+    assert _n_approvals(db_path) == 0
 
 
 async def test_failed_approval_insert_leaves_no_half_written_state(ds, db_path):
