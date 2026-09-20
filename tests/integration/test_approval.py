@@ -248,3 +248,58 @@ async def test_same_site_but_cross_origin_is_403(ds, db_path):
     )
     assert resp.status_code == 403
     assert _status(db_path, "p1") == "PENDING_APPROVAL"
+
+
+# --- DNS rebinding: Host allowlist on every request -------------------------
+# A hostile domain pointed at 127.0.0.1 makes localhost:8001 same-origin for
+# that page, so Origin/Sec-Fetch-Site checks alone would pass. The Host header
+# cannot be forged by page scripts, so it is allowlisted on ALL requests.
+
+EVIL_HOST = {"Host": "evil.example:8001"}
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/", "/operations", "/operations/proposals.json", "/-/versions.json"],
+)
+async def test_non_local_host_get_is_403(ds, db_path, path):
+    _add_proposal(db_path, "p1")
+    resp = await ds.client.get(path, headers=EVIL_HOST)
+    assert resp.status_code == 403
+    assert "p1" not in resp.text  # nothing about the data leaked
+
+
+async def test_non_local_host_post_is_403_and_writes_nothing(ds, db_path):
+    _add_proposal(db_path, "p1")
+    resp = await ds.client.post(
+        "/-/approve-all", data={},
+        # Origin matches Host, exactly what a rebinding page would send.
+        headers={**EVIL_HOST, "Origin": "http://evil.example:8001"},
+    )
+    assert resp.status_code == 403
+    assert _status(db_path, "p1") == "PENDING_APPROVAL"
+    assert _n_approvals(db_path) == 0
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "localhost", "localhost:8001",
+        "127.0.0.1", "127.0.0.1:8001",
+        "[::1]", "[::1]:8001",
+        "LOCALHOST:8001",
+    ],
+)
+async def test_local_hosts_are_allowed(ds, db_path, host):
+    resp = await ds.client.get("/-/versions.json", headers={"Host": host})
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["localhost.evil.example", "evil.example", "127.0.0.1.evil.example:8001",
+     "[::2]", "0.0.0.0:8001", ""],
+)
+async def test_lookalike_and_empty_hosts_are_refused(ds, host):
+    resp = await ds.client.get("/-/versions.json", headers={"Host": host})
+    assert resp.status_code == 403

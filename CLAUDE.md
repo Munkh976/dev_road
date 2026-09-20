@@ -81,7 +81,7 @@ exactly one place. `BrokerInterface` deliberately has no
 
 ## Current status
 
-**Built and tested (32 tests passing):**
+**Built and tested (50 tests passing):**
 
 - `src/config.py` — typed pydantic loader, safety validators
 - `db/schema.sql` — 13 tables, 4 views
@@ -91,8 +91,9 @@ exactly one place. `BrokerInterface` deliberately has no
 - `src/execution/broker.py` — interface and dataclasses
 - `datasette/metadata.json` — 10 canned queries, all verified against schema
 - `datasette/plugins/approval.py` — approve/reject/halt/journal routes; atomic
-  decisions, same-origin guard on every POST, 16 integration tests in
-  `tests/integration/`
+  decisions, same-origin guard on every POST
+- `datasette/plugins/host_guard.py` — Host allowlist on every request (DNS
+  rebinding); 34 integration tests for both plugins in `tests/integration/`
 
 **Stubs — signatures and docstrings fixed, bodies raise `NotImplementedError`:**
 

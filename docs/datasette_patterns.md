@@ -94,7 +94,17 @@ registered through the same wrapper.
 
 **Network binding.** `datasette serve` binds to `127.0.0.1` by default (`-h`
 defaults to it, port 8001), so only this machine can connect. Never pass
-`-h 0.0.0.0`; the guard above assumes local-only access. Forms may still
+`-h 0.0.0.0`; the guard above assumes local-only access.
+
+**Host allowlist (DNS rebinding).** Binding to 127.0.0.1 does not stop a
+hostile page from pointing its own domain at 127.0.0.1; the browser then
+treats localhost:8001 as same-origin for that page, its `Origin` and `Host`
+both say "evil.example", and the origin guard passes. That page could *read*
+signals, proposals and the journal. `datasette/plugins/host_guard.py` uses the
+`asgi_wrapper` hook to return 403 on **every** request (GET included, Datasette's
+own pages included) unless `Host` is `localhost`, `127.0.0.1` or `[::1]`, with
+or without a port. A missing Host is refused. Page scripts cannot forge `Host`.
+If you ever serve on another hostname, add it to `ALLOWED_HOSTS` deliberately. Forms may still
 include `<input type="hidden" name="csrftoken" value="{{ csrftoken() }}">` and
 `fetch()` callers `X-CSRFToken`, which costs nothing and covers the
 cookie-bearing case, but it is not the protection we rely on. A
