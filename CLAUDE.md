@@ -35,7 +35,7 @@ say so rather than working around the guard.
 | **`rank_exit` > `rank_threshold`.** The buffer prevents churn | `config.py` cross-check |
 | **IBKR pacing ≤ 6 requests/minute** (60 per 10 min is IBKR's hard cap) | `src/data/pacing.py` |
 | **Orders default to `dry_run=True`** | `BrokerInterface.submit_order` |
-| **Risk rejections are final.** A `risk_status = REJECT` proposal cannot be approved | `datasette/plugins/approval.py` raises `Forbidden` |
+| **Risk rejections are final.** A `risk_status = REJECT` proposal cannot be approved | `datasette/plugins/approval.py` raises `Forbidden`, and the write's `WHERE` clause refuses it again |
 | **Fail closed.** A check that cannot be evaluated counts as a failure | risk engine |
 | **No forward-filling price data.** Gaps stay NaN | `PriceCache.load_matrix` |
 
@@ -81,7 +81,7 @@ exactly one place. `BrokerInterface` deliberately has no
 
 ## Current status
 
-**Built and tested (16 tests passing):**
+**Built and tested (32 tests passing):**
 
 - `src/config.py` — typed pydantic loader, safety validators
 - `db/schema.sql` — 13 tables, 4 views
@@ -90,7 +90,9 @@ exactly one place. `BrokerInterface` deliberately has no
 - `src/data/cache.py` — parquet cache, incremental merge, bar validation
 - `src/execution/broker.py` — interface and dataclasses
 - `datasette/metadata.json` — 10 canned queries, all verified against schema
-- `datasette/plugins/approval.py` — approve/reject/halt/journal routes
+- `datasette/plugins/approval.py` — approve/reject/halt/journal routes; atomic
+  decisions, same-origin guard on every POST, 16 integration tests in
+  `tests/integration/`
 
 **Stubs — signatures and docstrings fixed, bodies raise `NotImplementedError`:**
 
@@ -187,6 +189,10 @@ Virtual environment: `.venv\Scripts\activate`
 - **No numeric literals in `src/`.** Everything comes from `Config`.
 - **Pure functions in `src/strategy/`** — no IO, no broker, no database. That
   is what lets backtest and live paths share identical code.
+- **Datasette `execute_write_fn` does not wrap in a transaction** (0.65.5). It
+  just runs your function on the write connection, so write functions need
+  their own `with conn:` for commit/rollback. Without it, a failure midway
+  leaves half-written state.
 - **Tests alongside implementation.** A stub is not done until it has a test.
 - **Signal functions must be tested for look-ahead** by feeding truncated data
   and asserting the output is unchanged.
