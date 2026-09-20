@@ -10,8 +10,6 @@ db/*.db-wal
 db/*.db-shm
 reports/*.html
 backtest_results/
-# Temporary reference copy — never commit, will be deleted
-resette_cloud/
 
 # journal entries are yours; keep the directory, ignore the contents
 journal/*.md
