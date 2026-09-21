@@ -15,6 +15,7 @@ from src.strategy.signals import (
     compute_panel,
     market_regime,
     realized_volatility,
+    trailing_sma,
 )
 
 BENCH = "SPY"
@@ -181,7 +182,8 @@ def test_real_config_windows_on_a_geometric_series(cfg):
 
 # ---------------------------------------------------------------- look-ahead
 
-SIGNALS = ["mom_6m", "mom_12m", "blended_momentum", "vol_63", "score", "rank", "atr_20"]
+SIGNALS = ["mom_6m", "mom_12m", "blended_momentum", "vol_63", "score", "rank", "atr_20",
+           "sma_reentry"]
 CUTS = [220, 300, 301, 380, 449]
 
 
@@ -373,3 +375,25 @@ def test_top_never_includes_unranked_symbols(cfg, panel_inputs):
     assert "S04" in f.table.index and f.rank_of("S04") is None
     top = f.top(len(f.table))
     assert len(top) == ranked and "S04" not in top
+
+
+# ------------------------------------------------------- re-entry SMA (spec 6.2)
+
+
+def test_trailing_sma_hand_values_and_a_gap_poisons_its_window():
+    px = pd.DataFrame({"A": [1.0, 2.0, 3.0, 4.0, np.nan, 6.0, 7.0, 8.0]})
+    out = trailing_sma(px, 3)["A"]
+    assert out.iloc[:2].isna().all()                                    # window not yet full
+    assert out.iloc[2] == 2.0 and out.iloc[3] == 3.0                    # (1+2+3)/3, (2+3+4)/3
+    assert out.iloc[4:7].isna().all()                                   # never forward-filled
+    assert out.iloc[7] == 7.0                                           # (6+7+8)/3
+
+
+def test_the_panel_carries_the_reentry_sma_from_config(cfg, panel_inputs):
+    close, high, low, mask = panel_inputs
+    panel = compute_panel(close, high, low, cfg, mask)
+    days = cfg.reentry.sma_days
+    assert days == 50
+    px = close.drop(columns=BENCH)
+    pd.testing.assert_frame_equal(panel.sma_reentry, px.rolling(days, min_periods=days).mean())
+    assert panel.at(px.index[-1]).table["sma_reentry"].notna().any()

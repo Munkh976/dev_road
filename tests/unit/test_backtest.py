@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from src.backtest import walkforward as wf
+from src.strategy import plan as plan_module
 from src.backtest.walkforward import (
     BacktestError,
     BacktestOptions,
@@ -61,8 +62,7 @@ SMALL_UNIVERSE = {"adv_window_days": 2, "min_dollar_volume_20d": 1000.0,
 @pytest.fixture(scope="module")
 def tiny(cfg) -> Config:
     """Windows of 1-3 bars so a market of a few weeks can be worked on paper."""
-    return variant(cfg, signals=SMALL_SIGNALS, sizing={"covariance_window": 2},
-                   universe=SMALL_UNIVERSE)
+    return variant(cfg, signals=SMALL_SIGNALS, universe=SMALL_UNIVERSE, reentry={"sma_days": 2})
 
 
 # ------------------------------------------------------------- tiny markets
@@ -139,19 +139,17 @@ def test_affordable_shares_edge_cases(cfg):
 def test_schedule_decisions_are_the_last_bar_of_each_week():
     idx = pd.bdate_range("2024-01-01", "2024-02-16")
     idx = idx.drop(pd.Timestamp("2024-01-26"))                       # a Friday holiday
-    decisions, _ = weekly_schedule(idx)
+    decisions = weekly_schedule(idx)
     dates = [idx[d].strftime("%a %m-%d") for d in decisions]
     assert dates[:4] == ["Fri 01-05", "Fri 01-12", "Fri 01-19", "Thu 01-25"]
 
 
-def test_schedule_entry_week_is_the_first_weekly_fill_of_each_month():
+def test_every_week_is_a_decision_week_there_is_no_monthly_entry_schedule():
+    """v1 entered only in the first fill of each month. v2 refills toward the target
+    every week, so there are as many decision rows as trading weeks."""
     idx = pd.bdate_range("2024-01-01", "2024-06-28")
-    decisions, entries = weekly_schedule(idx)
-    fills_ = sorted(idx[d + 1] for d in entries)
-    # decision on the Friday before the first Monday (or first trading day) of the month
-    assert [d.strftime("%Y-%m-%d") for d in fills_] == [
-        "2024-01-08", "2024-02-05", "2024-03-04", "2024-04-01", "2024-05-06", "2024-06-03"]
-    assert {d for d in entries} <= set(decisions)
+    decisions = weekly_schedule(idx)
+    assert len(decisions) == 26 and all(idx[d].dayofweek == 4 for d in decisions)
 
 
 def test_schedule_never_uses_prices():
@@ -205,65 +203,105 @@ def test_too_little_history_is_an_error_not_an_empty_result(cfg):
 # ========================================================== hand-checked run
 #
 # The market (hand_market): 23 bars, Mon 2024-01-01 .. Wed 2024-01-31. Tiny
-# windows (skip 1, lookbacks 2 and 3, vol window 2, SMA 2, ATR 2).
+# windows (skip 1, lookbacks 2 and 3, vol window 2, SMA 2, ATR 2, re-entry SMA 2).
 #
-#   * Signals first exist at row 3 (Thu Jan 4). The first Friday is Jan 5 (row
-#     4), and the fill on Mon Jan 8 (row 5) is the first of January: an entry
-#     week. Every later January fill is not.
-#   * At the Jan 5 close: A ranks 1, momentum > 0, vol 22.4% (< 80%), SPY above
-#     its 2-day SMA. B ranks 2 but momentum < 0 (E3). One name, so sizing pins A
-#     at the 20% cap: target 0.20 x $15,000 = $3,000. The vol target does not
-#     bind: 0.2 x 22.4% = 4.5% << 15%.
-#   * The fill is at A's open on Jan 8: 0.99 x C5, with
-#       C5 = 100 x 1.03 x 1.01 x 1.03 x 1.01 x 1.03 = 111.4691
-#       open = 110.3544, shares = 3000 / 110.3544 = 27.18514
-#   * Cost of that buy: commission max(27.185 x 0.005, $1) = $1.00, plus 6.5 bps
-#     of $3,000 = $1.95: $2.95. Cash = 15,000 - 3,000 - 2.95.
-#   * Nothing else trades (no exits; no entry week; B never qualifies), so the
-#     final equity is cash + 27.18514 x C22, with C22 = 154.4346.
+#   * Signals first exist at row 3 (Thu Jan 4). Decisions are the last bar of each
+#     week: rows 4, 9, 14, 19 (Fridays) and 22 (the last bar; nothing to fill on).
+#   * The graded filter starts DEFENSIVE (fail closed). SPY is above its 2-day SMA
+#     at every check, so the reading at row 4 is the first of two, and at row 9 the
+#     second: the mode becomes NORMAL after the row 9 decision, and the first buy
+#     fills on the next bar, Mon Jan 15 (row 10). Nothing can be bought before that.
+#   * At the Jan 12 close (row 9) A ranks 1, momentum > 0, vol 22.4% (< 80%), sector
+#     Tech; B ranks 2 but falls (E3). One name, so sizing pins A at the 15% cap:
+#     $2,250 of $15,000 (the 85% target is far away, which is why it keeps refilling
+#     and cannot: there is nothing else to buy).
+#   * Filled at A's open on Jan 15: 0.99 x C10, C10 = 100 x (1.03 x 1.01)^5.
+#   * Cost of that buy: commission max(shares x 0.005, $1) = $1.00, plus 6.5 bps
+#     of $2,250 = $1.4625.
+#   * A then rises faster than the account, so it drifts above the 15% cap and is
+#     trimmed back to it every Friday (CAP_TRIM), filled the Monday after.
+
+C10 = 100 * (1.03 * 1.01) ** 5
+C14 = C10 * 1.03 * 1.01 * 1.03 * 1.01
+A_OPEN_JAN15 = 0.99 * C10
+A_SHARES = 2250.0 / A_OPEN_JAN15
+BUY_COST = 1.0 + 2250.0 * 6.5e-4                                # $1 minimum + 6.5 bps = 2.4625
 
 
-A_SHARES = 27.185144039745346          # 3000 / 110.35439045730001
-A_OPEN_JAN8 = 110.35439045730001       # 0.99 x C5
-A_CLOSE_JAN31 = 154.43459139492745     # C22
-FINAL_NO_COST = 16198.326611790319     # 12000 + A_SHARES x C22
-BUY_COST = 1.0 + 3000.0 * 6.5e-4                                # 2.95
-
-
-def test_hand_checked_entry_and_hold(tiny):
+def test_hand_checked_first_entry_waits_for_two_confirming_weeks(tiny):
     sim = simulate(hand_market(), tiny)
 
-    (buy,) = sim.trades                                              # the only trade
+    buy = sim.trades[0]
     assert (buy.symbol, buy.side, buy.rule) == ("A", "BUY", "ENTRY")
-    assert buy.date == pd.Timestamp("2024-01-08")                    # next bar's open, not Jan 5
-    assert buy.price == pytest.approx(A_OPEN_JAN8, rel=1e-6)
-    assert buy.shares == pytest.approx(A_SHARES, rel=1e-6)
-    assert buy.value == pytest.approx(3000.0)
+    assert buy.date == pd.Timestamp("2024-01-15")                    # not Jan 8: one reading is not two
+    assert buy.price == pytest.approx(A_OPEN_JAN15, rel=1e-12)
+    assert buy.value == pytest.approx(2250.0) and buy.shares == pytest.approx(A_SHARES)
     assert buy.cost == pytest.approx(BUY_COST)
 
     assert sim.first_signal == pd.Timestamp("2024-01-04")
-    assert sim.equity.iloc[0] == pytest.approx(15000.0)              # nothing bought yet
-    assert sim.equity.loc["2024-01-05"] == pytest.approx(15000.0)
-    assert sim.equity.loc["2024-01-08"] == pytest.approx(
-        12000.0 - BUY_COST + A_SHARES * 111.4691, rel=1e-6)          # marked at the close
-    assert sim.equity.iloc[-1] == pytest.approx(FINAL_NO_COST - BUY_COST, rel=1e-9)
-    assert sim.exposure.iloc[-1] == pytest.approx(
-        A_SHARES * A_CLOSE_JAN31 / sim.equity.iloc[-1])
+    for day in ("2024-01-05", "2024-01-08", "2024-01-12"):
+        assert sim.equity.loc[day] == pytest.approx(15000.0)         # flat until Jan 15
+    assert sim.equity.loc["2024-01-15"] == pytest.approx(
+        15000.0 - 2250.0 - BUY_COST + A_SHARES * C10, rel=1e-12)     # marked at the close
+    assert sim.exposure.loc["2024-01-15"] == pytest.approx(A_SHARES * C10 / sim.equity.loc["2024-01-15"])
 
 
-def test_hand_checked_costs_are_exactly_the_difference(tiny):
+def test_hand_checked_regime_modes_by_bar(tiny):
+    """Mode in force on each bar, before that bar's own decision: DEFENSIVE through
+    the row 9 decision's bar (Jan 12), NORMAL from Jan 15."""
+    sim = simulate(hand_market(), tiny)
+    assert sim.regime.loc["2024-01-04":"2024-01-12"].eq("defensive").all()
+    assert sim.regime.loc["2024-01-15":].eq("normal").all()
+
+
+def test_hand_checked_cap_trim(tiny):
+    """At the Jan 19 close (row 14) A is worth shares x C14 = $2,459.6 of a
+    $15,207 account: 16.2% against the 15% cap. The excess is sold at the next
+    open (Mon Jan 22), computed as a share of the shares held at the decision."""
+    sim = simulate(hand_market(), tiny)
+    trim = sim.trades[1]
+    cash = 15000.0 - 2250.0 - BUY_COST
+    value = A_SHARES * C14
+    equity = cash + value
+    fraction = (value - 0.15 * equity) / value
+    assert (trim.symbol, trim.side, trim.rule) == ("A", "SELL", "CAP_TRIM")
+    assert trim.date == pd.Timestamp("2024-01-22")
+    assert trim.shares == pytest.approx(fraction * A_SHARES, rel=1e-9)
+    c15 = C14 * 1.03
+    assert trim.price == pytest.approx(0.99 * c15, rel=1e-12)
+    assert fraction == pytest.approx(0.0726, abs=1e-4)               # ~7% of the position
+
+
+def test_the_ledger_reconciles_with_the_equity_curve(tiny):
+    """Cash rebuilt from the trades alone, plus shares at the last close, is the
+    final equity: nothing is created or lost outside the trade list."""
+    data = hand_market()
+    sim = simulate(data, tiny)
+    cash = 15000.0
+    shares: dict[str, float] = {}
+    for t in sim.trades:
+        sign = 1 if t.side == "BUY" else -1
+        cash += -sign * t.value - t.cost
+        shares[t.symbol] = shares.get(t.symbol, 0.0) + sign * t.shares
+    last = data.closes.iloc[-1]
+    assert sim.equity.iloc[-1] == pytest.approx(cash + sum(q * last[s] for s, q in shares.items()), rel=1e-12)
+    assert sim.exposure.max() <= 1.0 and (cash >= 0)
+
+
+def test_hand_checked_costs_are_charged_and_switching_them_off_flatters(tiny):
     with_costs = simulate(hand_market(), tiny)
     without = simulate(hand_market(), tiny, BacktestOptions(apply_costs=False))
-    assert without.equity.iloc[-1] == pytest.approx(FINAL_NO_COST, rel=1e-9)
-    assert without.equity.iloc[-1] - with_costs.equity.iloc[-1] == pytest.approx(BUY_COST)
+    assert all(t.cost > 0 for t in with_costs.trades)
+    assert without.equity.iloc[-1] > with_costs.equity.iloc[-1]
+    assert without.equity.iloc[-1] - with_costs.equity.iloc[-1] == pytest.approx(
+        sum(t.cost for t in with_costs.trades), rel=0.02)
 
 
 def _x4_market():
-    """A rises to row 10, then falls 2% a day for four days (rows 11-14), then
-    is flat. At the Jan 19 close (row 14): blended momentum
-    0.5 x (C13/C12 - 1) + 0.5 x (C13/C11 - 1) = -0.0298 (X4). The trailing stop is
-    NOT hit: high 121.84 (C10), ATR 3.452, stop 121.84 - 3 x 3.452 = 111.48 and
-    C14 = 112.38 > stop. A ranks 1 or 2 of 2 (X1 needs > 10). Market is on."""
+    """A rises to row 10, then falls 2% a day for four days (rows 11-14), then is
+    flat. At the Jan 19 close (row 14): blended momentum -0.0298 (X4). Only 7.8%
+    below its high, so no ladder level (12%) is reached. A ranks 1 or 2 of 2 (X1
+    needs > 16)."""
     n = 23
     rets = alternating(11, 0.03, 0.01) + [-0.02] * 4 + [0.0] * (n - 1 - 14)
     return hand_market(n, a_rets=rets)
@@ -274,56 +312,248 @@ def test_hand_checked_exit_on_negative_momentum(tiny):
     buy, sell = sim.trades
     assert sell.side == "SELL" and sell.rule == "X4"
     assert sell.date == pd.Timestamp("2024-01-22")                   # Monday after the Jan 19 signal
-    assert sell.shares == pytest.approx(buy.shares)                  # whole position
+    assert sell.shares == pytest.approx(buy.shares)                  # the whole position
 
     c = path(100, alternating(11, 0.03, 0.01) + [-0.02] * 4 + [0.0] * 8)
     open_sell = 0.99 * c[15]                                         # C15 = C14 (flat day)
     proceeds = A_SHARES * open_sell
     assert sell.price == pytest.approx(open_sell, rel=1e-6)
-    assert sell.cost == pytest.approx(1.0 + proceeds * 6.5e-4)       # $1 minimum again
-    final = 12000.0 - BUY_COST + proceeds - (1.0 + proceeds * 6.5e-4)
-    assert sim.equity.iloc[-1] == pytest.approx(final, rel=1e-6)
+    assert sell.cost == pytest.approx(1.0 + proceeds * 6.5e-4)       # the $1 minimum again
+    final = 15000.0 - 2250.0 - BUY_COST + proceeds - (1.0 + proceeds * 6.5e-4)
+    assert sim.equity.iloc[-1] == pytest.approx(final, rel=1e-9)
     assert sim.exposure.iloc[-1] == 0.0                              # flat, and stays flat
-    assert len(sim.trades) == 2                                      # no re-entry: not an entry week
+    assert len(sim.trades) == 2                                      # momentum is 0 afterwards: no re-entry
 
 
-def test_x2_market_off_sells_a_healthy_position_at_the_next_open(tiny):
-    # SPY dips on row 9 (Fri Jan 12): below its 2-day SMA, so market_off.
-    spy = [0.01] * 8 + [-0.02] + [0.01] * 13
+def test_market_off_no_longer_sells_a_healthy_position_at_once(tiny):
+    """v1's X2 sold at the first reading. v2 needs two consecutive readings below,
+    and the response is a pro rata trim to 40%, which a book at 15% does not need."""
+    spy = [0.01] * 13 + [-0.02] + [0.01] * 8                         # the Fri Jan 19 reading only
     sim = simulate(hand_market(spy_rets=spy), tiny)
-    sell = fills(sim, "SELL")[0]
-    assert sell.rule == "X2" and sell.date == pd.Timestamp("2024-01-15")
+    assert not any(t.side == "SELL" and t.rule in ("X2", "REGIME_TRIM") for t in sim.trades)
+    assert sim.regime.loc["2024-01-15":].eq("normal").all()          # a single reading changed nothing
 
 
-def test_a_stopped_out_name_is_not_bought_back_the_same_week():
-    """Tight stop, so a one-day 3% dip fires X3 on Fri Feb 2 (row 24) - an entry
-    week - while A is still rank 1 with positive momentum and vol 67% (< 80%), so
-    it passes E1-E9. Without the guard the same open would sell A and buy it
-    straight back (the mutant test below shows that it does)."""
-    base = variant(_load_cfg(), signals=SMALL_SIGNALS, sizing={"covariance_window": 2},
-                   universe=SMALL_UNIVERSE, exit={"trailing_stop_atr": 0.5})
-    n = 30
-    rets = alternating(24, 0.03, 0.01) + [-0.03] + [0.01] * (n - 1 - 24)
-    sim = simulate(hand_market(n, a_rets=rets), base)
-    feb5 = [t for t in sim.trades if t.date == pd.Timestamp("2024-02-05")]
-    assert [(t.side, t.symbol, t.rule) for t in feb5] == [("SELL", "A", "X3")]
+# --------------------------------------------------------------- the ladder
 
 
-def _load_cfg() -> Config:
-    return Config(**yaml.safe_load(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8")))
+def ladder_market(recovery: list[float]) -> MarketData:
+    """A peaks on row 14 (Fri Jan 19, close 152.43), falls four days to row 18
+    and 1% more on row 19: 14.2% below its peak at the Jan 26 close but still 6.5%
+    ABOVE its entry price (bought at 121.8). Then it recovers as `recovery` says."""
+    rets = alternating(10, 0.03, 0.01) + [0.02] + [0.06, 0.05, 0.06, 0.05] \
+        + [-0.04, -0.03, -0.04, -0.03] + [-0.01] + [0.01] + recovery
+    return hand_market(len(rets) + 1, a_rets=rets)
 
 
-def test_break_allowing_the_same_week_rebuy_is_caught():
-    bad = load_mutant("src.backtest.walkforward",
-                      'candidates = replace(sf, table=sf.table.drop(index=list(sold), errors="ignore"))',
-                      "candidates = sf")
-    base = variant(_load_cfg(), signals=SMALL_SIGNALS, sizing={"covariance_window": 2},
-                   universe=SMALL_UNIVERSE, exit={"trailing_stop_atr": 0.5})
-    n = 30
-    rets = alternating(24, 0.03, 0.01) + [-0.03] + [0.01] * (n - 1 - 24)
-    sim = bad.simulate(hand_market(n, a_rets=rets), base)
-    feb5 = [(t.side, t.rule) for t in sim.trades if t.date == pd.Timestamp("2024-02-05")]
-    assert ("BUY", "ENTRY") in feb5
+def no_x4(tiny):
+    """Momentum is measured over 2-3 bars in these tiny markets, so a real fall trips X4
+    before the ladder can show. Switch X4 off to see the ladder alone."""
+    return variant(tiny, exit={"exit_on_negative_momentum": False})
+
+
+STRONG = [0.05, 0.04, 0.05, 0.04, 0.05, 0.04, 0.05]
+WEAK = [0.01, 0.012] * 4
+
+
+def test_the_ladder_sells_a_third_at_12_percent_below_the_peak_not_below_entry(tiny):
+    data = ladder_market(STRONG)
+    c = data.closes["A"]
+    sim = simulate(data, no_x4(tiny))
+    rules = [(t.date.strftime("%m-%d"), t.side, t.rule) for t in sim.trades]
+    assert rules[:3] == [("01-15", "BUY", "ENTRY"), ("01-22", "SELL", "CAP_TRIM"), ("01-29", "SELL", "L1")]
+
+    peak, close19, entry = c.iloc[14], c.iloc[19], sim.trades[0].price
+    assert 1 - close19 / peak >= 0.12 and 1 - close19 / peak < 0.20      # level 1 only
+    assert close19 > entry                                                # up on entry, down from the peak
+    held = sim.trades[0].shares - sim.trades[1].shares                    # after the cap trim
+    l1 = sim.trades[2]
+    assert l1.shares == pytest.approx(held / 3, rel=1e-9)                 # a third of the position
+    assert l1.price == pytest.approx(0.99 * c.iloc[20], rel=1e-12)        # at the next open
+
+
+def test_a_partly_sold_name_is_topped_up_only_after_it_beats_its_prior_peak(tiny):
+    data = ladder_market(STRONG)
+    c = data.closes["A"]
+    peak = c.iloc[14]
+    strong = simulate(data, no_x4(tiny))
+    topups = [t for t in strong.trades if t.rule == "TOPUP"]
+    assert len(topups) == 1 and topups[0].side == "BUY"
+    decision = data.closes.index.get_loc(topups[0].date) - 1              # the Friday before the fill
+    assert c.iloc[decision] > peak                                         # closed above its old peak
+    assert c.iloc[decision - 5] < peak                                     # and had not the week before
+
+    weak_data = ladder_market(WEAK)
+    assert weak_data.closes["A"].iloc[15:].max() < peak                    # never gets back to it
+    weak = simulate(weak_data, no_x4(tiny))
+    assert [t.rule for t in weak.trades if t.side == "BUY"] == ["ENTRY"]   # so never bought back
+
+
+def test_the_ladder_level_does_not_fire_again_after_the_top_up(tiny):
+    """One partial sale, one top-up, and nothing else on the ladder in the strong market."""
+    sim = simulate(ladder_market(STRONG), no_x4(tiny))
+    assert [t.rule for t in sim.trades if t.rule.startswith("L")] == ["L1"]
+
+
+def test_break_the_stop_is_measured_from_entry_not_the_peak(tiny):
+    """The high never rises above the entry-day close: a 14% fall from the peak,
+    while still up on entry, no longer reaches level 1."""
+    bad = load_mutant(
+        "src.backtest.walkforward",
+        "self.highs[sym] = float(np.fmax(self.highs[sym], c))",
+        "self.highs[sym] = c if np.isnan(self.highs[sym]) else self.highs[sym]")
+    data = ladder_market(STRONG)
+    good = simulate(data, no_x4(tiny))
+    broken = bad.simulate(data, no_x4(tiny))
+    assert any(t.rule == "L1" for t in good.trades)
+    assert not any(t.rule.startswith("L") for t in broken.trades)
+
+
+# ------------------------------------------------------ full exit and re-entry
+
+
+def reentry_market() -> MarketData:
+    """A is bought Jan 15, then crashes 25% then 10% (rows 15-16) and is 30.5% below
+    its peak by the Jan 26 close: L3 sells everything on Mon Jan 29 (row 20).
+    It then rises 2% a day. At the Fri Jan 26 (row 24) decision it has a positive
+    momentum and rank 1 but has just dipped, so it closes BELOW its own 2-day SMA:
+    re-entry is refused. The next Friday (row 29) it is above: re-entry Mon Feb 12."""
+    rets = (alternating(10, 0.03, 0.01) + [0.02] + [0.02, 0.015, 0.02, 0.015]
+            + [-0.25, -0.10, 0.01, 0.012, 0.008] + [0.02] * 4 + [-0.01] + [0.02] * 4
+            + [0.01] + [0.015, 0.01, 0.015, 0.01, 0.015, 0.01])
+    return hand_market(len(rets) + 1, a_rets=rets)
+
+
+def sequence(sim, sym="A"):
+    return [(t.date.strftime("%m-%d"), t.side, t.rule) for t in sim.trades if t.symbol == sym]
+
+
+def test_full_exit_then_reentry_needs_the_50_day_sma_condition(tiny):
+    data = reentry_market()
+    sim = simulate(data, tiny)
+    seq = sequence(sim)
+    assert ("01-29", "SELL", "L3") in seq                                # the disaster level: all of it
+    reentry = [x for x in seq if x[2] == "REENTRY"]
+    assert reentry == [("02-12", "BUY", "REENTRY")]                     # not Feb 5
+    c = data.closes["A"]
+    assert c.iloc[24] < (c.iloc[24] + c.iloc[23]) / 2                    # the dip: below its 2-day SMA
+    assert c.iloc[29] > (c.iloc[29] + c.iloc[28]) / 2                    # above it a week later
+    l3 = next(t for t in sim.trades if t.rule == "L3")
+    assert l3.shares == pytest.approx(
+        sum(t.shares for t in sim.trades if t.side == "BUY" and t.date < l3.date)
+        - sum(t.shares for t in sim.trades if t.side == "SELL" and t.date < l3.date), rel=1e-9)
+
+
+def test_break_reentry_without_the_50_day_condition_returns_a_week_early(tiny, monkeypatch):
+    bad = load_mutant("src.strategy.rules", 'and row["close"] > row["sma_reentry"]', "and True")
+    data = reentry_market()
+    good = [x for x in sequence(simulate(data, tiny)) if x[2] == "REENTRY"]
+    monkeypatch.setattr(plan_module, "evaluate_entries", bad.evaluate_entries)
+    broken = [x for x in sequence(simulate(data, tiny)) if x[2] == "REENTRY"]
+    assert good == [("02-12", "BUY", "REENTRY")] and broken == [("02-05", "BUY", "REENTRY")]
+
+
+# --------------------------------------------------------- the graded filter
+
+
+def trend_market(n: int = 62, k: int = 8) -> MarketData:
+    """k steadily rising names in a sector each, and an SPY that rises for 24 bars,
+    falls 2% a day for 15 (rows 25-39), then rises 1.5% a day. Fridays are rows 4, 9,
+    14... so the readings below its 2-day SMA are rows 29 and 34 (DEFENSIVE after
+    row 34, the trim filling Mon Feb 19), and above are rows 44 and 49 (NORMAL after
+    row 49, filling Mon Mar 11)."""
+    idx = pd.bdate_range("2024-01-01", periods=n, name="date")
+    names = [f"S{i}" for i in range(k)]
+    cols = {}
+    for i, s in enumerate(names):
+        base = 0.004 + 0.0008 * i
+        cols[s] = path(100, [base + (0.003 if t % 2 else -0.003) for t in range(1, n)])
+    cols["SPY"] = path(100, [0.01] * 24 + [-0.02] * 15 + [0.015] * (n - 1 - 39))
+    close = pd.DataFrame(cols, index=idx)
+    vol = pd.DataFrame(1e6, index=idx, columns=close.columns)
+    sectors = {s: f"Sec{i}" for i, s in enumerate(names)} | {"SPY": "ETF"}
+    return MarketData(close * 0.999, close * 1.004, close * 0.996, close, vol, sectors)
+
+
+@pytest.fixture(scope="module")
+def trend(tiny):
+    return trend_market(), simulate(trend_market(), tiny)
+
+
+def test_the_first_refill_buys_six_names_in_one_week_at_the_cap_free_weights(trend):
+    """No two-a-month limit: six names on Jan 15, each $12,750 / 6 = $2,125 (14.2%,
+    under the 15% cap; five would cap at 75% invested, short of 85%)."""
+    _, sim = trend
+    firsts = [t for t in sim.trades if t.date == pd.Timestamp("2024-01-15")]
+    assert [t.symbol for t in firsts] == ["S7", "S6", "S5", "S4", "S3", "S2"]   # best ranks first
+    assert all(t.rule == "ENTRY" and t.value == pytest.approx(2125.0) for t in firsts)
+
+
+def test_defensive_trims_to_40_percent_then_the_book_comes_back(trend):
+    data, sim = trend
+    assert sim.exposure.loc["2024-02-16"] > 0.80                              # the 85% book, drifted up
+    assert sim.regime.loc["2024-02-16"] == "normal"
+    assert sim.regime.loc["2024-02-19"] == "defensive"                        # after the row 34 decision
+    inside = sim.exposure.loc["2024-02-19":"2024-03-08"]
+    assert inside.between(0.38, 0.46).all()                                   # 40% + at most the 5% band
+    assert sim.regime.loc["2024-03-11"] == "normal"
+    assert sim.exposure.loc["2024-03-15":].between(0.80, 0.95).all()          # back to the 85% target
+
+
+def test_defensive_trims_are_pro_rata_and_nothing_is_bought_while_it_lasts(trend):
+    _, sim = trend
+    trims = [t for t in sim.trades if t.rule == "REGIME_TRIM"]
+    assert len(trims) == 6 and {t.date for t in trims} == {pd.Timestamp("2024-02-19")}
+    held = {}
+    for t in sim.trades:                        # shares held after that day's cap trim, if any
+        if t.date <= pd.Timestamp("2024-02-19") and t.rule != "REGIME_TRIM":
+            held[t.symbol] = held.get(t.symbol, 0.0) + (t.shares if t.side == "BUY" else -t.shares)
+    shares = [t.shares / held[t.symbol] for t in trims]
+    assert max(shares) - min(shares) < 1e-9                                   # the same share of each
+    assert 0.40 < shares[0] < 0.60                                            # 1 - 40%/85%
+    inside = [t for t in sim.trades if pd.Timestamp("2024-02-19") < t.date < pd.Timestamp("2024-03-11")]
+    assert not [t for t in inside if t.side == "BUY"]                         # no new names, no top-ups
+
+
+def test_trimmed_names_are_restored_when_the_filter_is_back(trend):
+    _, sim = trend
+    restores = [t for t in sim.trades if t.rule == "RESTORE"]
+    assert len(restores) == 6 and {t.date for t in restores} == {pd.Timestamp("2024-03-11")}
+    assert {t.symbol for t in restores} == {t.symbol for t in sim.trades if t.rule == "REGIME_TRIM"}
+
+
+def test_break_trimmed_names_are_never_flagged_for_restore(tiny, trend):
+    data, good = trend
+    bad = load_mutant("src.backtest.walkforward", "if o.rule == REGIME_TRIM:    # comes back when the filter does",
+                      "if False:")
+    broken = bad.simulate(data, tiny)
+    assert any(t.rule == "RESTORE" for t in good.trades)
+    assert not any(t.rule == "RESTORE" for t in broken.trades)
+    assert broken.exposure.iloc[-1] < good.exposure.iloc[-1] - 0.10           # and it stays under-invested
+
+
+def test_break_the_graded_filter_switches_on_one_reading(tiny, trend, monkeypatch):
+    data, good = trend
+    bad = load_mutant("src.strategy.regime", "if streak >= cfg.regime.confirm_weeks:", "if streak >= 1:")
+    monkeypatch.setattr(wf, "next_mode", bad.next_mode)
+    broken = simulate(data, tiny)
+    assert not broken.regime.equals(good.regime)
+
+
+def test_break_the_refill_ignores_the_position_cap(tiny, monkeypatch):
+    """Sized without the 15% cap the first refill puts the whole 85% into one name."""
+    bad = load_mutant(
+        "src.strategy.rules",
+        "cfg.sizing.min_position_weight, cfg.sizing.max_position_weight, budget)",
+        "cfg.sizing.min_position_weight, FULL_WEIGHT, budget)")
+    data = trend_market()
+    good = simulate(data, tiny)
+    monkeypatch.setattr(plan_module, "size_positions", bad.size_positions)
+    monkeypatch.setattr(plan_module, "size_new_positions", bad.size_new_positions)
+    broken = simulate(data, tiny)
+    biggest = lambda sim: max(t.value for t in sim.trades if t.side == "BUY")     # noqa: E731
+    assert biggest(good) <= 0.15 * 15000.0 + 1e-6
+    assert biggest(broken) > 0.15 * 15000.0 * 2
 
 
 def test_hand_checked_benchmark_buy_and_hold(tiny):
@@ -350,9 +580,9 @@ def two_stock_market() -> MarketData:
     """A (rising) has the LOWER dollar volume until row 12, then overtakes B
     (falling). With one universe slot, membership is B, chosen at the first
     build, and stays B for the whole first quarter even after A overtakes it on
-    volume. The Apr 1 rebuild picks A; the first entry week after that is May 6
-    (April's entry decision was Fri Mar 29, before the rebuild). Hindsight
-    membership is A throughout."""
+    volume. The Apr 1 rebuild picks A; the first decision after that is Fri Apr 5,
+    filled Mon Apr 8 (the Mar 29 decision was made before the rebuild). Hindsight
+    membership is A throughout, so it buys on Jan 15, once the filter is confirmed."""
     n = 100                                    # Mon 2024-01-01 .. Fri 2024-05-17
     b_vol = [5e4] * 12 + [1e3] * (n - 12)
     return hand_market(n, b_vol=b_vol)
@@ -361,14 +591,14 @@ def two_stock_market() -> MarketData:
 def test_point_in_time_universe_waits_for_the_quarterly_rebuild(tiny):
     one = variant(tiny, universe={"max_symbols": 1})
     pit = simulate(two_stock_market(), one)
-    assert [(t.date.strftime("%m-%d"), t.symbol) for t in fills(pit, "BUY")] == [("05-06", "A")]
+    assert [(t.date.strftime("%m-%d"), t.symbol) for t in fills(pit, "BUY")] == [("04-08", "A")]
 
 
 def test_break_todays_universe_buys_the_stock_before_it_qualified(tiny):
     one = variant(tiny, universe={"max_symbols": 1})
     pit = simulate(two_stock_market(), one)
     hindsight = simulate(two_stock_market(), one, BacktestOptions(point_in_time_universe=False))
-    assert fills(hindsight, "BUY")[0].date == pd.Timestamp("2024-01-08")     # four months earlier
+    assert fills(hindsight, "BUY")[0].date == pd.Timestamp("2024-01-15")     # nearly three months earlier
     assert hindsight.equity.iloc[-1] > pit.equity.iloc[-1] * 1.02            # and richer
     assert hindsight.equity.iloc[-1] != pit.equity.iloc[-1]
 
@@ -376,12 +606,12 @@ def test_break_todays_universe_buys_the_stock_before_it_qualified(tiny):
 def test_break_same_bar_execution_trades_at_the_signal_close(tiny):
     good = simulate(hand_market(), tiny)
     bad = simulate(hand_market(), tiny, BacktestOptions(same_bar_execution=True))
-    (b,) = bad.trades
-    assert b.date == pd.Timestamp("2024-01-05")                       # the signal bar itself
-    assert b.price == pytest.approx(108.222409, rel=1e-6)             # C4, not next open
-    assert b.shares == pytest.approx(3000.0 / 108.222409, rel=1e-6)
-    expected = 12000.0 - BUY_COST + b.shares * A_CLOSE_JAN31
-    assert bad.equity.iloc[-1] == pytest.approx(expected, rel=1e-9)
+    b = bad.trades[0]
+    c9 = C10 / (1.03 * 1.01) * 1.03                                   # the Jan 12 close
+    assert b.date == pd.Timestamp("2024-01-12")                       # the signal bar itself
+    assert b.price == pytest.approx(c9, rel=1e-12)                    # C9, not the next open
+    assert b.shares == pytest.approx(2250.0 / c9, rel=1e-12)
+    assert b.date != good.trades[0].date and b.price != good.trades[0].price
     assert bad.equity.iloc[-1] != pytest.approx(good.equity.iloc[-1], rel=1e-4)
 
 
@@ -443,7 +673,7 @@ def rcfg(cfg) -> Config:
         signals={"momentum": {"skip_days": 2, "lookback_short": 4, "lookback_long": 6},
                  "volatility": {"window": 5}, "trend_filter": {"ma_period": 4},
                  "atr": {"period": 3}},
-        sizing={"covariance_window": 5}, universe={**SMALL_UNIVERSE, "adv_window_days": 3})
+        reentry={"sma_days": 3}, universe={**SMALL_UNIVERSE, "adv_window_days": 3})
 
 
 @pytest.fixture(scope="module")
@@ -459,22 +689,42 @@ def test_engine_invariants(rsim, rcfg):
 
     data = random_market(1)
     dates = data.closes.index
-    decisions, entry_rows = weekly_schedule(dates)
-    entry_fills = {dates[r + 1] for r in entry_rows}
-    fill_dates = {dates[d + 1] for d in decisions if d + 1 < len(dates)}
+    fill_dates = {dates[d + 1] for d in weekly_schedule(dates) if d + 1 < len(dates)}
     assert {t.date for t in trades} <= fill_dates                      # only ever at a weekly fill
-    assert {t.date for t in trades if t.rule == "ENTRY"} <= entry_fills   # entries: monthly
-    for d in {t.date for t in trades if t.rule == "ENTRY"}:
-        assert sum(t.rule == "ENTRY" and t.date == d for t in trades) <= rcfg.entry.max_new_per_rebalance
 
     held: dict[str, float] = {}
-    for t in trades:                                                   # replay: at most 6 names, no shorts
+    for t in trades:                                                   # replay: at most 10 names, no shorts
         held[t.symbol] = held.get(t.symbol, 0.0) + (t.shares if t.side == "BUY" else -t.shares)
         assert held[t.symbol] > -1e-9
         held = {s: q for s, q in held.items() if q > 1e-9}
         assert len(held) <= rcfg.risk.max_positions
-    assert {t.rule for t in trades if t.side == "SELL"} <= {"X1", "X2", "X3", "X4", "DRIFT_TRIM"}
+    sells = {t.rule for t in trades if t.side == "SELL"}
+    buys = {t.rule for t in trades if t.side == "BUY"}
+    assert sells <= {"X1", "X4", "L1", "L2", "L3", "CAP_TRIM", "REGIME_TRIM"}
+    assert buys <= {"ENTRY", "REENTRY", "TOPUP", "RESTORE"}
+    assert not sells & {"X2", "X3", "DRIFT_TRIM"}                       # retired in v2
     assert all(t.cost > 0 for t in trades)
+    assert set(rsim.regime) <= {"normal", "defensive"}
+
+
+def test_the_ledger_reconciles_on_a_random_market(rsim):
+    data = random_market(1)
+    cash, shares = 15000.0, {}
+    for t in rsim.trades:
+        sign = 1 if t.side == "BUY" else -1
+        cash += -sign * t.value - t.cost
+        shares[t.symbol] = shares.get(t.symbol, 0.0) + sign * t.shares
+    last = data.closes.iloc[-1]
+    assert cash >= 0                                                    # never spent what it did not have
+    assert rsim.equity.iloc[-1] == pytest.approx(
+        cash + sum(q * last[s] for s, q in shares.items()), rel=1e-9)
+
+
+def test_the_risk_dial_has_no_effect_on_the_backtest(rcfg, rsim):
+    """LIVE ONLY (spec 8.2): not simulated. Any dial setting gives the same run."""
+    other = variant(rcfg, risk_dial={"levels": {"normal": 0.85, "caution": 0.45}})
+    again = simulate(random_market(1), other)
+    assert again.equity.equals(rsim.equity)
 
 
 # ------------------------------------------------------------- look-ahead
@@ -529,6 +779,21 @@ def test_whole_engine_has_no_lookahead(rcfg, rsim):
         assert base.equity.iloc[-1] != alt.equity.iloc[-1]             # the scramble did bite
 
 
+def test_the_graded_filter_and_restores_have_no_lookahead(tiny, trend):
+    """Cut the trend market at the decisions where the mode changes and around the
+    first refill, scramble everything after (here: the same market run backwards),
+    and equity and decisions up to the cut must not move."""
+    data, _ = trend
+    flipped = MarketData(*(f.iloc[::-1].set_axis(f.index) for f in
+                           (data.opens, data.highs, data.lows, data.closes, data.volumes)),
+                         data.sectors, data.allowed)
+    for cut in (9, 29, 34, 44, 49, 54):
+        eq_same, dec_same, base, alt = lookahead(lambda d: simulate(d, tiny), data, flipped, cut)
+        assert eq_same, f"equity up to row {cut} changed when later prices were scrambled"
+        assert dec_same, f"decisions at row {cut} changed when later prices were scrambled"
+        assert not base.equity.equals(alt.equity)
+
+
 def test_break_filling_at_a_future_price_is_caught(rcfg, rsim):
     bad = load_mutant("src.backtest.walkforward", "return arr[i, j]",
                       "return self.close[min(i + NEXT_BAR, self.n - 1), j]")
@@ -545,16 +810,6 @@ def test_break_deciding_on_a_future_signal_is_caught(rcfg, rsim):
     caught = [not lookahead(lambda d: bad.simulate(d, rcfg), data, other, c)[1]
               for c in cuts_around_trades(rsim, data)]
     assert any(caught)
-
-
-def test_break_entries_every_week_changes_the_trading(rcfg, rsim):
-    bad = load_mutant("src.backtest.walkforward", "if i in self.entry_decisions:",
-                      "if i in self.decision_set:")
-    data = random_market(1)
-    weekly = bad.simulate(data, rcfg)
-    entry_fills = {data.closes.index[r + 1] for r in weekly_schedule(data.closes.index)[1]}
-    assert len(weekly.trades) != len(rsim.trades)
-    assert {t.date for t in weekly.trades if t.rule == "ENTRY"} - entry_fills   # off-schedule entries
 
 
 # ========================================================= walk-forward run
@@ -685,6 +940,45 @@ def test_a1_fails_when_spy_wins_and_says_to_buy_spy(cfg, capsys):
     assert "A1  FAIL" in out and "Buy SPY" in out
 
 
+def with_cagr(target: float, n: int = 1000) -> pd.Series:
+    """A curve whose CAGR (calendar days / 365.25) is exactly `target`."""
+    idx = pd.bdate_range("2020-01-01", periods=n)
+    years = (idx - idx[0]).days / 365.25
+    return pd.Series(15000.0 * (1 + target) ** years, index=idx)
+
+
+def test_a1_needs_spy_plus_two_points_not_merely_spy(cfg):
+    """v2: SPY + 2.0 percentage points, because a survivorship-biased universe
+    favors a fully invested momentum book. Beating SPY by 1.9 is a FAIL."""
+    assert cfg.backtest.acceptance.beat_benchmark_margin == 0.02
+    bench = with_cagr(0.10)
+    for margin, passes in ((0.019, False), (0.021, True), (0.0, False), (-0.01, False)):
+        res = _result_with(cfg)
+        res.benchmark_curve, res.equity_curve = bench, with_cagr(0.10 + margin)
+        v = check_acceptance(res, cfg, echo=False)
+        assert v.results["A1"][0] is passes, margin
+        assert v.results["A1"][2] == pytest.approx(0.12)               # the threshold shown is SPY + 2 pts
+
+
+def test_a1_margin_comes_from_config_and_zero_restores_the_v1_test(cfg):
+    zero = variant(cfg, backtest={"acceptance": {"beat_benchmark_margin": 0.0}})
+    res = _result_with(zero)
+    res.benchmark_curve, res.equity_curve = with_cagr(0.10), with_cagr(0.101)
+    assert check_acceptance(res, zero, echo=False).results["A1"][0]
+
+
+def test_a6_prints_fail_no_positive_excess_return_not_nan(cfg):
+    res = _result_with(cfg, excess=(-0.05, -0.02))
+    verdict = check_acceptance(res, cfg, echo=False)
+    text = verdict.report()
+    assert "A6  FAIL  no positive excess return" in text
+    assert "nan" not in text.lower()
+    empty = _result_with(cfg, excess=())
+    assert "A6  FAIL  no positive excess return" in check_acceptance(empty, cfg, echo=False).report()
+    fine = _result_with(cfg, excess=(0.1, 0.1, 0.1, 0.1))
+    assert "A6  PASS" in check_acceptance(fine, cfg, echo=False).report() and "no positive" not in         check_acceptance(fine, cfg, echo=False).report()
+
+
 def test_a2_max_drawdown_boundary(cfg):
     assert check_acceptance(_result_with(cfg, shock=(500, 0.30)), cfg, echo=False).results["A2"][0]
     hit = check_acceptance(_result_with(cfg, shock=(500, 0.40)), cfg, echo=False)
@@ -756,5 +1050,32 @@ def test_report_states_what_the_backtest_leaves_out(cfg):
     text = format_report(res, check_acceptance(res, cfg, echo=False), cfg)
     for phrase in ("E5 (AI veto) always passes", "Cash earns 0%", "point-in-time",
                    "today's S&P 500 membership", "sectors and security type",
-                   "No same-bar execution", "Out-of-sample only"):
+                   "No same-bar execution", "Out-of-sample only", "live risk dial is not simulated"):
         assert phrase in text, phrase
+
+
+def test_the_report_shows_what_the_v2_rules_did(cfg):
+    res = _result_with(cfg)
+    day = res.equity_curve.index
+    def trade(k, side, rule):
+        return wf.Trade(day[k], "A", side, 1.0, 1.0, 100.0, 1.0, rule)
+    res.trades = ([trade(1, "BUY", "ENTRY")] * 3 + [trade(2, "BUY", "REENTRY")] * 2
+                  + [trade(3, "BUY", "TOPUP")] + [trade(3, "BUY", "RESTORE")] * 4
+                  + [trade(4, "SELL", "L1")] * 5 + [trade(4, "SELL", "L2")] * 3 + [trade(4, "SELL", "L3")]
+                  + [trade(5, "SELL", "CAP_TRIM")] * 7 + [trade(5, "SELL", "X1")] * 2
+                  + [trade(5, "SELL", "X4")] + [trade(6, "SELL", "REGIME_TRIM")] * 6)
+    res.exposure = pd.Series([0.50, 0.60, 0.70, 0.80] * 250, index=day)
+    res.regime = pd.Series(["normal"] * 750 + ["defensive"] * 250, index=day)
+    text = format_report(res, check_acceptance(res, cfg, echo=False), cfg)
+    for line in (
+        "Average invested fraction 65.0%",
+        "Time at the 85% target (filter on) 75.0%, at the 40% target (filter off) 25.0%",
+        "Sells per ladder level: L1 (-12%) 5, L2 (-20%) 3, L3 (-28%) 1",
+        "cap-drift trims 7",
+        "X1 (rank) 2, X4 (momentum) 1",
+        "Top-ups after partial sales: 1",
+        "Restores after defensive trims: 4",
+        "Re-entries after full exits: 2",
+        "New entries: 3",
+    ):
+        assert line in text, line

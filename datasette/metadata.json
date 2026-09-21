@@ -1,5 +1,5 @@
 {
-  "title": "weekly_momentum_v1 — operations",
+  "title": "weekly_momentum_v2 — operations",
   "description": "Trade proposals, approvals, orders and audit trail. Positions and balances are NOT here: those are read live from IBKR.",
   "databases": {
     "operations": {
@@ -36,7 +36,7 @@
           "description": "Kill switch. trading_enabled = 0 means no orders are built, full stop."
         },
         "position_state": {
-          "description": "The one thing IBKR cannot tell us: highest close since entry, for the trailing stop."
+          "description": "The one thing IBKR cannot tell us: highest close since entry, for the laddered trailing stop."
         }
       },
       "queries": {
@@ -47,13 +47,13 @@
         },
         "top_ranked": {
           "title": "Current rankings",
-          "description": "Latest signal run. Rank 1-6 are entry candidates; above 10 triggers an exit.",
+          "description": "Latest signal run. Rank 1-10 are entry candidates; above 16 triggers an exit.",
           "sql": "SELECT rank, symbol, sector, close, momentum, vol, score, atr, regime FROM v_current_signals LIMIT 30"
         },
         "adherence": {
           "title": "Adherence — are you following your own system?",
-          "description": "Three consecutive weeks of overrides is a kill criterion (spec section 14).",
-          "sql": "SELECT strftime('%Y-W%W', a.decided_at) AS week, COUNT(*) AS decisions, SUM(a.override) AS overrides, ROUND(100.0 * SUM(a.override) / COUNT(*), 1) AS override_pct FROM approvals a GROUP BY week ORDER BY week DESC LIMIT 26"
+          "description": "Three consecutive weeks of overrides is a kill criterion (spec section 14). A manual risk dial change counts as an override.",
+          "sql": "SELECT week, SUM(decisions) AS decisions, SUM(overrides) AS overrides, ROUND(100.0 * SUM(overrides) / SUM(decisions), 1) AS override_pct FROM (SELECT strftime('%Y-W%W', decided_at) AS week, COUNT(*) AS decisions, SUM(override) AS overrides FROM approvals GROUP BY week UNION ALL SELECT strftime('%Y-W%W', changed_at) AS week, COUNT(*) AS decisions, COUNT(*) AS overrides FROM risk_dial_changes GROUP BY week) GROUP BY week ORDER BY week DESC LIMIT 26"
         },
         "overrides": {
           "title": "Override log",

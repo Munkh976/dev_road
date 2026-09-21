@@ -1,4 +1,4 @@
-# weekly_momentum_v1
+# weekly_momentum_v2
 
 A rules-based weekly momentum system for a $15,000 IBKR account. Runs on one
 laptop, takes about an hour a week, and proposes trades that **you** approve
@@ -18,13 +18,19 @@ before anything reaches the broker.
 ## What it does
 
 Rank 150 liquid S&P names by 6- and 12-month momentum divided by volatility,
-hold the top 6, but only while SPY is above its 200-day average — otherwise
-hold cash. Enter at rank 6, exit at rank 10. Size by inverse volatility,
-capped at 20% per name. Wide 3×ATR trailing stop as disaster insurance.
+hold up to 10, aiming to be 85% invested while SPY is above its 200-day average
+and 40% invested once it has been below for two weekly checks. Enter at rank 10,
+exit beyond rank 16. Size by inverse volatility, 5%–15% per name. A laddered
+trailing stop sells a third at −12%, −20% and −28% from each name's highest
+close; there is deliberately no take-profit rule.
 
-Exits are checked weekly; new entries are monthly, capped at 2 per rebalance.
-That asymmetry is deliberate: risk control responds fast, position-taking
-does not.
+Everything is decided weekly from one pure plan and filled at the next open:
+exits and the ladder, trims, then a refill toward the target when the book is
+under 80% invested.
+
+**v1 failed its acceptance test** (tag `backtest-v1`: CAGR 4.2% vs SPY 14.3%,
+35% invested). v2 is the one allowed rewrite. If it fails too, development as a
+trading strategy stops; either way it runs on paper only.
 
 Full rules, rationale, known weaknesses and acceptance criteria:
 **`docs/STRATEGY_SPEC.md`**. Every parameter: **`config.yaml`**.
@@ -61,8 +67,8 @@ Full rules, rationale, known weaknesses and acceptance criteria:
         └───────┬───────┘
                 ▼
         ┌───────────────┐
-        │ rules E1-E9   │  entry / exit / sizing
-        │      X1-X4    │
+        │ rules + plan  │  entries / exits / ladder / sizing
+        │ regime        │
         └───────┬───────┘
                 ▼
         ┌───────────────┐
@@ -212,7 +218,7 @@ you read last week's journal.
 Do not skip ahead. Each step is useless without the previous one.
 
 - [x] **1. Config + validation** — guards tested
-- [x] **2. SQLite schema** — 15 tables, 4 views
+- [x] **2. SQLite schema** — 16 tables, 4 views
 - [x] **3. Parquet cache + pacing limiter** — tested
 - [x] **4. Broker interface** — abstraction fixed
 - [x] **5. `build_universe()`** — the S&P filter in `src/data/refresh.py`
@@ -269,7 +275,7 @@ weekly-momentum/
 │   └── STRATEGY_SPEC.md     the rules and why — read this first
 ├── config.yaml              every parameter
 ├── Makefile                 all commands
-├── db/schema.sql            15 tables, 4 views
+├── db/schema.sql            16 tables, 4 views
 ├── scripts/init_db.py
 ├── src/
 │   ├── config.py            typed loader + safety validators
@@ -278,10 +284,13 @@ weekly-momentum/
 │   │   ├── cache.py         parquet price cache
 │   │   └── refresh.py       weekly / quarterly cache refresh
 │   ├── strategy/
-│   │   ├── signals.py       pure functions (stub)
-│   │   └── rules.py         E1-E9, X1-X4, sizing (stub)
+│   │   ├── signals.py       pure functions
+│   │   ├── regime.py        graded market filter (2 weekly readings)
+│   │   ├── rules.py         E1-E8, R1, X1, X4, ladder, sizing
+│   │   └── plan.py          the weekly order plan, shared by backtest and live
 │   ├── ai/veto.py           advisory only (stub)
 │   ├── risk/engine.py       deterministic, fails closed (stub)
+│   ├── risk/dial.py         live-only invested-target cap, journalled
 │   ├── execution/
 │   │   ├── broker.py        interface
 │   │   ├── ibkr.py          ib_async implementation (stub)

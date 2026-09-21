@@ -15,20 +15,19 @@ backtest from a fiction:
 How it works
 ------------
 Signals are computed at the close of the last trading day of each week (a
-Friday). Orders decided then fill at the NEXT bar's open. Exits (X1-X4) are
-checked every week; entries (E1-E9) only in the first weekly execution of each
-month (spec section 9), together with the drift rebalance. The universe for
-each date is chosen point-in-time (spec 2.3), rebuilt quarterly like live, not
-from today's snapshot.
+Friday). Orders decided then fill at the NEXT bar's open. Every week the same
+pure planner (`strategy/plan.py`, shared with live) runs: exits and the ladder,
+cap-drift trims, the graded market filter, then top-ups and a refill toward the
+invested target (spec sections 6, 8, 9). The universe for each date is chosen
+point-in-time (spec 2.3), rebuilt quarterly like live, not from today's snapshot.
 
 Nothing is fitted, so the "in-sample" years cannot be tuned on; every parameter
 comes from config.yaml and is the same in every window. The strategy is
 therefore simulated CONTINUOUSLY from the first date signals exist, and the
 out-of-sample windows (one per year, from the first date that is
 `in_sample_years` after that) are scored from that one path. Starting every
-window flat would charge each year a ramp-up (entries are capped at two a
-month, so a book takes about three months to build, and cash earns 0%) that the
-strategy running live would pay once. In-sample years are simulated only so the
+window flat would charge each year a ramp-up (the book takes weeks to fill, and
+cash earns 0%) that the strategy running live would pay once. In-sample years are simulated only so the
 first scored window starts from a realistic book; they are never reported.
 
 `BacktestOptions` has three switches that make the backtest WRONG on purpose
@@ -36,15 +35,16 @@ first scored window starts from a realistic book; they are never reported.
 show each one changes the answer. The report prints a banner if any is set.
 
 Known omissions, all repeated in the report: the AI veto (E5) always passes,
-cash earns 0%, the risk engine's order-level checks are not applied, and
-sectors, security type and index membership are today's (spec 2.3).
+cash earns 0%, the risk engine's order-level checks are not applied, the live
+risk dial is not simulated (spec 8.2), and sectors, security type and index
+membership are today's (spec 2.3).
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date
 
 import numpy as np
@@ -62,7 +62,20 @@ from src.data.universe import (
     todays_universe,
 )
 from src.runlog import finish_run, start_run
-from src.strategy.rules import evaluate_entries, evaluate_exits, size_new_positions
+from src.strategy.plan import (
+    BUY,
+    CAP_TRIM,
+    ENTRY,
+    REENTRY,
+    REGIME_TRIM,
+    SELL,
+    RESTORE,
+    TOPUP,
+    Holding,
+    PlannedOrder,
+    plan_week,
+)
+from src.strategy.regime import DEFENSIVE, NORMAL, RegimeState, next_mode
 from src.strategy.signals import PRIOR_BAR, compute_panel
 
 log = logging.getLogger(__name__)
@@ -73,6 +86,7 @@ HALF_SPREAD = 0.5          # the quoted spread is crossed one way per trade
 MONTHS_PER_YEAR = 12
 NEXT_BAR = 1
 ZERO = 0.0
+DUST_SHARES = 1e-9         # what is left after selling "everything" in floating point
 REPORTS_DIR = REPO_ROOT / "reports"
 
 
@@ -156,7 +170,7 @@ class Trade:
     price: float
     value: float
     cost: float
-    rule: str            # X1..X4 for exits; ENTRY, DRIFT_ADD, DRIFT_TRIM otherwise
+    rule: str            # X1, X4, L1..Ln, CAP_TRIM, REGIME_TRIM; ENTRY, REENTRY, TOPUP
 
 
 @dataclass
@@ -166,6 +180,7 @@ class Simulation:
     trades: list[Trade]
     first_signal: pd.Timestamp
     stats: dict[str, int]
+    regime: pd.Series                   # mode in force on each bar: normal | defensive
 
 
 @dataclass
@@ -178,6 +193,7 @@ class BacktestResult:
     periods_per_year: int = 0
     notes: list[str] = field(default_factory=list)
     exposure: pd.Series | None = None
+    regime: pd.Series | None = None            # out-of-sample mode per day
 
     @property
     def oos_cagr(self) -> float:
@@ -233,7 +249,7 @@ class AcceptanceVerdict:
     reason: str | None = None    # why the verdict is FAIL regardless of the numbers
 
     LABELS = {
-        "A1": "CAGR vs SPY, after costs (actual: strategy; threshold: SPY)",
+        "A1": "CAGR vs SPY plus the required margin, after costs (actual: strategy; threshold: SPY + margin)",
         "A2": "Max drawdown (must be below)",
         "A3": "Worst rolling 12 months (must be above)",
         "A4": "Sharpe ratio (must be above)",
@@ -244,6 +260,10 @@ class AcceptanceVerdict:
     def report(self) -> str:
         lines = []
         for code, (ok, actual, threshold) in self.results.items():
+            if code == "A6" and np.isnan(actual):
+                # Not a number to print: there is no edge to apportion (spec 12.1).
+                lines.append(f"  {code}  {'PASS' if ok else 'FAIL'}  no positive excess return")
+                continue
             lines.append(f"  {code}  {'PASS' if ok else 'FAIL'}  {self.LABELS[code]}: "
                          f"{actual:.4f} vs {threshold:.4f}")
         lines.append(f"  VERDICT: {'PASS' if self.passed else 'FAIL'}"
@@ -337,38 +357,35 @@ def max_affordable_shares(cash: float, price: float, cfg: Config, costs_on: bool
 # -------------------------------------------------------------------- schedule
 
 
-def weekly_schedule(dates: pd.DatetimeIndex) -> tuple[list[int], set[int]]:
-    """(decision rows, entry-decision rows).
+def weekly_schedule(dates: pd.DatetimeIndex) -> list[int]:
+    """Decision rows: the last trading day of each ISO week. Its orders fill on
+    the next row. Uses the calendar only, never prices.
 
-    A decision row is the last trading day of each ISO week; its orders fill on
-    the next row. It is an entry decision when that fill is the first weekly
-    fill of its calendar month, i.e. "the first Monday" (or the first trading
-    day of the first trading week). Uses the calendar only, never prices.
+    v1 also picked out "entry weeks" (the first fill of each month). v2 has no
+    monthly entry cap: every week can refill toward the invested target.
     """
     n = len(dates)
     iso = dates.isocalendar()
     rows = pd.Series(np.arange(n), index=dates)
-    decisions = sorted(rows.groupby([iso["year"].to_numpy(), iso["week"].to_numpy()]).max())
-    fills = [d + NEXT_BAR for d in decisions if d + NEXT_BAR < n]
-    fill_dates = dates[fills]
-    first_of_month = pd.Series(fills, index=fill_dates).groupby(
-        [fill_dates.year, fill_dates.month]).min()
-    return decisions, {f - NEXT_BAR for f in first_of_month}
+    return sorted(rows.groupby([iso["year"].to_numpy(), iso["week"].to_numpy()]).max())
 
 
 # ------------------------------------------------------------------- simulation
 
 
 @dataclass
-class _Order:
-    symbol: str
-    kind: str            # EXIT | BUY | ADJUST
-    rule: str
-    dollars: float = ZERO      # BUY: target value. ADJUST: signed change.
+class _Pending:
+    """A planned order waiting for the next open. SELL quantities are fixed at
+    decision time, as fractions of what was then held."""
+
+    order: PlannedOrder
+    shares: float       # SELL: shares to sell
+    week: int           # decision week counter, for "weeks since exit"
 
 
 class _Engine:
-    """One simulation. State is cash, shares, position highs and last marks."""
+    """One simulation. State is cash, shares, position highs, ladder progress,
+    the regime mode and last marks."""
 
     def __init__(self, data: MarketData, cfg: Config, options: BacktestOptions) -> None:
         self.cfg, self.opt, self.data = cfg, options, data
@@ -385,15 +402,20 @@ class _Engine:
         else:
             universe = todays_universe(data.closes, data.volumes, cfg, data.allowed)
         self.panel = compute_panel(data.closes, data.highs, data.lows, cfg, universe)
-        self.returns = self.panel.closes / self.panel.closes.shift(PRIOR_BAR) - 1
 
-        self.decisions, self.entry_decisions = weekly_schedule(self.dates)
+        self.decisions = weekly_schedule(self.dates)
         self.decision_set = set(self.decisions)
 
         self.cash = float(cfg.account.capital)
         self.shares: dict[str, float] = {}
         self.highs: dict[str, float] = {}
         self.mark: dict[str, float] = {}
+        self.ladder_fired: dict[str, int] = {}     # per open position: levels already used
+        self.topup_above: dict[str, float] = {}    # after a ladder sale: the peak to beat
+        self.restore: set[str] = set()             # trimmed pro rata by the defensive filter
+        self.exit_week: dict[str, int] = {}        # name -> decision week of its last full exit
+        self.regime = RegimeState()
+        self.week = 0
         self.trades: list[Trade] = []
         self.stats = {"unfilled_orders": 0, "sizing_failures": 0, "e7_drops": 0}
 
@@ -424,96 +446,71 @@ class _Engine:
 
     # -------------------------------------------------------- decisions
 
-    def _decide(self, i: int) -> list[_Order]:
+    def _decide(self, i: int) -> list[_Pending]:
         t = self.dates[i]
         sf = self.panel.at(t)
-        atr = {s: self.panel.atr_20.at[t, s] for s in self.shares if s in self.panel.atr_20.columns}
-        exits = evaluate_exits(dict(self.shares), sf, self.highs, atr, self.cfg)
-        sold = {d.symbol: d.rule for d in exits if d.should_exit}
-        orders = [_Order(s, "EXIT", rule) for s, rule in sold.items()]
-        remaining = [s for s in self.shares if s not in sold]
-        if i in self.entry_decisions:
-            orders += self._entries(i, sf, remaining, sold)
-        return orders
-
-    def _entries(self, i, sf, remaining: list[str], sold: dict[str, str]) -> list[_Order]:
-        cfg, t = self.cfg, self.dates[i]
-        equity = self._equity()
-        sector_w: dict[str | None, float] = {}
-        for s in remaining:
-            sec = self.data.sectors.get(s)
-            sector_w[sec] = sector_w.get(sec, ZERO) + self.shares[s] * self.mark[s] / equity
-
-        # A name stopped out this week is not a candidate this week: buying it
-        # back at the same open would be a stop that does nothing.
-        candidates = replace(sf, table=sf.table.drop(index=list(sold), errors="ignore"))
-        entries = evaluate_entries(
-            candidates, set(remaining), sector_w, {}, cfg, sectors=self.data.sectors)
-        new = [d.symbol for d in entries if d.eligible]
-        book = remaining + new
-        if not book:
-            return []
-        try:
-            targets, dropped = size_new_positions(
-                book, new, sf.table["vol_63"], self.returns.loc[:t], equity, cfg)
-        except ValueError as exc:
-            # Fail closed: an unsizable book gets no orders this week.
-            log.warning("%s: sizing failed, no entries or rebalance (%s)", t.date(), exc)
+        self.regime = next_mode(self.regime, sf.market_on, self.cfg)
+        self.week += 1
+        holdings = {
+            s: Holding(q, q * self.mark[s], self.highs[s], self.ladder_fired.get(s, 0),
+                       self.topup_above.get(s), s in self.restore)
+            for s, q in self.shares.items()}
+        plan = plan_week(
+            sf, holdings, self._equity(), self.regime.mode,
+            {s: self.week - w for s, w in self.exit_week.items()},
+            self.data.sectors, {}, self.cfg)
+        if plan.sizing_failed:
+            # Fail closed: an unsizable book buys nothing this week (sells stand).
+            log.warning("%s: sizing failed, no buys", t.date())
             self.stats["sizing_failures"] += 1
-            return []
-        self.stats["e7_drops"] += len(dropped)
-
-        orders = [_Order(s, "BUY", "ENTRY", float(targets[s])) for s in new if s in targets.index]
-        for s in remaining:
-            current, target = self.shares[s] * self.mark[s], float(targets[s])
-            if target > ZERO and abs(current / target - 1) > cfg.schedule.drift_tolerance:
-                orders.append(_Order(s, "ADJUST", "DRIFT", target - current))
-        return orders
+        self.stats["e7_drops"] += plan.e7_drops
+        return [_Pending(o, o.fraction * self.shares.get(o.symbol, ZERO), self.week)
+                for o in plan.orders]
 
     # -------------------------------------------------------- execution
 
-    def _execute(self, orders: list[_Order], i: int) -> None:
-        """Sells first (they fund the buys), then buys in the order given."""
-        for o in orders:
-            if o.kind == "EXIT":
-                self._sell(o.symbol, None, i, o.rule)
-        for o in orders:
-            if o.kind == "ADJUST" and o.dollars < ZERO and o.symbol in self.shares:
-                price = self._fill_price(self.col[o.symbol], i)
-                if not np.isnan(price):
-                    self._sell(o.symbol, min(self.shares[o.symbol], -o.dollars / price),
-                               i, "DRIFT_TRIM")
-                else:
-                    self.stats["unfilled_orders"] += 1
-        for o in orders:
-            if o.kind == "BUY":
-                self._buy(o.symbol, o.dollars, i, "ENTRY")
-            elif o.kind == "ADJUST" and o.dollars > ZERO and o.symbol in self.shares:
-                self._buy(o.symbol, o.dollars, i, "DRIFT_ADD")
+    def _execute(self, pending: list[_Pending], i: int) -> None:
+        """Sells first (they fund the buys), then buys in the order planned."""
+        for p in pending:
+            if p.order.side == SELL and p.order.symbol in self.shares:
+                self._sell(p, i)
+        for p in pending:
+            if p.order.side == BUY:
+                self._buy(p.order, i)
 
-    def _sell(self, sym: str, qty: float | None, i: int, rule: str) -> None:
+    def _sell(self, p: _Pending, i: int) -> None:
+        sym, o = p.order.symbol, p.order
         price = self._fill_price(self.col[sym], i)
         if np.isnan(price):            # no bar to trade on (halted): retry next week
             self.stats["unfilled_orders"] += 1
             return
-        qty = self.shares[sym] if qty is None else qty
+        held = self.shares[sym]
+        whole = o.full_exit or held - p.shares <= DUST_SHARES     # however the floats fell
+        qty = held if whole else p.shares
         value = qty * price
         cost = self._cost(value, qty)
         self.cash += value - cost
-        left = self.shares[sym] - qty
-        if left > ZERO:
-            self.shares[sym] = left
-        else:
-            for book in (self.shares, self.highs, self.mark):
+        if whole:
+            for book in (self.shares, self.highs, self.mark, self.ladder_fired, self.topup_above):
                 book.pop(sym, None)
-        self.trades.append(Trade(self.dates[i], sym, "SELL", qty, price, value, cost, rule))
+            self.restore.discard(sym)
+            self.exit_week[sym] = p.week
+        else:
+            self.shares[sym] = held - qty
+            if o.levels:                 # a ladder sale: those levels are used up for good
+                self.ladder_fired[sym] = self.ladder_fired.get(sym, 0) + o.levels
+                self.topup_above[sym] = o.peak
+            if o.rule == REGIME_TRIM:    # comes back when the filter does
+                self.restore.add(sym)
+        self.trades.append(Trade(self.dates[i], sym, "SELL", qty, price, value, cost, o.rule))
 
-    def _buy(self, sym: str, dollars: float, i: int, rule: str) -> None:
+    def _buy(self, o: PlannedOrder, i: int) -> None:
+        sym = o.symbol
         price = self._fill_price(self.col[sym], i)
         if np.isnan(price):
             self.stats["unfilled_orders"] += 1
             return
-        qty = min(dollars / price, max_affordable_shares(self.cash, price, self.cfg, self.opt.apply_costs))
+        qty = min(o.dollars / price, max_affordable_shares(self.cash, price, self.cfg, self.opt.apply_costs))
         if not qty > ZERO:
             return
         value = qty * price
@@ -521,21 +518,28 @@ class _Engine:
         self.cash -= value + cost
         if sym not in self.shares:
             self.shares[sym], self.highs[sym], self.mark[sym] = ZERO, float("nan"), price
+            self.ladder_fired[sym] = 0                  # a new position: the ladder starts over
+            self.exit_week.pop(sym, None)
+        if o.rule in (TOPUP, RESTORE):
+            self.topup_above.pop(sym, None)             # it beat its peak; the block is spent
+            self.restore.discard(sym)
         self.shares[sym] += qty
-        self.trades.append(Trade(self.dates[i], sym, "BUY", qty, price, value, cost, rule))
+        self.trades.append(Trade(self.dates[i], sym, "BUY", qty, price, value, cost, o.rule))
 
     # -------------------------------------------------------------- run
 
     def run(self, start: pd.Timestamp | None = None) -> Simulation:
         first = self.dates.get_loc(self.first_signal if start is None else start)
-        pending: list[_Order] | None = None
+        pending: list[_Pending] | None = None
         equity: dict[pd.Timestamp, float] = {}
         exposure: dict[pd.Timestamp, float] = {}
+        modes: dict[pd.Timestamp, str] = {}
         for i in range(first, self.n):
             if pending:
                 self._execute(pending, i)         # fills at this bar's open
             pending = None
             self._update_marks(i)
+            modes[self.dates[i]] = self.regime.mode     # in force on this bar, before its decision
             if i in self.decision_set:
                 orders = self._decide(i)          # sees rows <= i only
                 if self.opt.same_bar_execution:
@@ -547,7 +551,8 @@ class _Engine:
             equity[self.dates[i]] = total
             exposure[self.dates[i]] = (total - self.cash) / total
         return Simulation(
-            pd.Series(equity), pd.Series(exposure), self.trades, self.first_signal, self.stats)
+            pd.Series(equity), pd.Series(exposure), self.trades, self.first_signal, self.stats,
+            pd.Series(modes))
 
 
 def simulate(
@@ -674,6 +679,7 @@ def run_walk_forward(
         equity_curve=curve, benchmark_curve=bench.loc[span],
         trades=[t for t in sim.trades if t.date > base],
         options=options, periods_per_year=ppy, exposure=sim.exposure.loc[span],
+        regime=sim.regime.loc[span],
     )
     unknown = [c for c in data.closes.columns
                if c != cfg.universe.benchmark and data.sectors.get(c) is None]
@@ -752,7 +758,10 @@ def check_acceptance(result: BacktestResult, cfg: Config, echo: bool = True) -> 
     a = cfg.backtest.acceptance
     cagr, bench = result.oos_cagr, result.benchmark_cagr
     checks = {
-        "A1": (cagr > bench if a.beat_benchmark else True, cagr, bench),
+        # v2: SPY plus a margin, because the universe's survivorship bias favors a
+        # fully invested momentum book. Harder, not easier (spec 13).
+        "A1": (cagr >= bench + a.beat_benchmark_margin if a.beat_benchmark else True,
+               cagr, bench + a.beat_benchmark_margin),
         "A2": (result.max_drawdown < a.max_drawdown, result.max_drawdown, a.max_drawdown),
         "A3": (result.worst_rolling_12m > a.worst_rolling_12m,
                result.worst_rolling_12m, a.worst_rolling_12m),
@@ -775,6 +784,40 @@ def check_acceptance(result: BacktestResult, cfg: Config, echo: bool = True) -> 
 # ---------------------------------------------------------------------- report
 
 
+def _regime_lines(result: BacktestResult, cfg: Config) -> list[str]:
+    if result.regime is None or result.regime.empty:
+        return []
+    share = result.regime.value_counts(normalize=True)
+    return [f"- Time at the {cfg.regime.target_normal:.0%} target (filter on) "
+            f"{share.get(NORMAL, ZERO):.1%}, at the {cfg.regime.target_defensive:.0%} target "
+            f"(filter off) {share.get(DEFENSIVE, ZERO):.1%}"]
+
+
+def _activity_lines(result: BacktestResult, cfg: Config) -> list[str]:
+    """What the v2 rules actually did, so a change in behavior is visible."""
+    sells: dict[str, int] = {}
+    for t in result.trades:
+        if t.side == "SELL":
+            sells[t.rule] = sells.get(t.rule, 0) + 1
+    buys = {rule: sum(t.side == "BUY" and t.rule == rule for t in result.trades)
+            for rule in (ENTRY, REENTRY, TOPUP, RESTORE)}
+    levels = [f"L{k}" for k in range(1, len(cfg.exit.ladder.drawdowns) + 1)]
+    ladder = ", ".join(
+        f"{code} (-{d:.0%}) {sells.get(code, 0)}"
+        for code, d in zip(levels, cfg.exit.ladder.drawdowns))
+    return [
+        f"- Sells per ladder level: {ladder}",
+        f"- Other sells: X1 (rank) {sells.get('X1', 0)}, X4 (momentum) {sells.get('X4', 0)}, "
+        f"cap-drift trims {sells.get(CAP_TRIM, 0)}, defensive pro-rata trims "
+        f"{sells.get(REGIME_TRIM, 0)}",
+        f"- Top-ups after partial sales: {buys[TOPUP]}",
+        f"- Restores after defensive trims: {buys[RESTORE]}",
+        f"- Re-entries after full exits: {buys[REENTRY]}",
+        f"- New entries: {buys[ENTRY]}",
+        f"- Total sells {sum(sells.values())}, total buys {sum(buys.values())}",
+    ]
+
+
 def format_report(result: BacktestResult, verdict: AcceptanceVerdict, cfg: Config) -> str:
     out = [f"# Backtest: {cfg.strategy.name} v{cfg.strategy.version}", ""]
     if not result.options.is_valid_run:
@@ -789,7 +832,8 @@ def format_report(result: BacktestResult, verdict: AcceptanceVerdict, cfg: Confi
         f"- Strategy CAGR {result.oos_cagr:.2%}, SPY buy-and-hold {result.benchmark_cagr:.2%}",
         f"- Max drawdown {result.max_drawdown:.2%}, worst rolling 12m {result.worst_rolling_12m:.2%}",
         f"- Sharpe {result.sharpe:.2f}, annual turnover {result.annual_turnover:.0%}",
-        f"- Average invested fraction {result.exposure.mean():.0%}",
+        f"- Average invested fraction {result.exposure.mean():.1%}",
+        *_regime_lines(result, cfg),
         f"- Final equity ${c.iloc[-1]:,.0f} vs SPY ${result.benchmark_curve.iloc[-1]:,.0f}",
         "", "## Windows", "",
         "| OOS start | OOS end | Strategy | SPY | Excess | Max DD | Sharpe | Turnover | Trades |",
@@ -800,11 +844,8 @@ def format_report(result: BacktestResult, verdict: AcceptanceVerdict, cfg: Confi
         out.append(f"| {w.oos_start} | {w.oos_end}{tag} | {w.strategy_return:.1%} | "
                    f"{w.benchmark_return:.1%} | {w.excess_return:+.1%} | {w.max_drawdown:.1%} | "
                    f"{w.sharpe:.2f} | {w.turnover:.0%} | {w.n_trades} |")
-    exits: dict[str, int] = {}
-    for t in result.trades:
-        if t.side == "SELL":
-            exits[t.rule] = exits.get(t.rule, 0) + 1
-    out += ["", f"Sells by rule: {exits or 'none'}", "", "## What this backtest does not tell you", "",
+    out += ["", "## Activity (out-of-sample)", "", *_activity_lines(result, cfg), "",
+            "## What this backtest does not tell you", "",
             "- **E5 (AI veto) always passes.** News as of a past date cannot be reproduced.",
             "- **Cash earns 0%.** This slightly understates the strategy in risk-off periods.",
             "- **Costs** per trade: $%.3f/share (min $%.2f), %g bps slippage, %g bps spread "
@@ -817,6 +858,8 @@ def format_report(result: BacktestResult, verdict: AcceptanceVerdict, cfg: Confi
             "(survivorship), and sectors and security type taken from today's labels."
             % cfg.universe.max_symbols,
             "- **Risk engine order-level checks are not applied** (order caps, drawdown halt).",
+            "- **The live risk dial is not simulated.** It lowers the target in live "
+            "trading only (spec 8.2); every backtest week runs at the regime target.",
             "- **In-sample years are warm-up only.** Nothing is fitted; parameters are "
             "identical in every window.",
             ""] + [f"- {n}" for n in result.notes]

@@ -112,24 +112,46 @@ class EntryCfg(BaseModel):
     min_momentum: float
     max_volatility: float
     require_ai_veto_pass: bool
-    max_new_per_rebalance: int = Field(ge=0)
+
+
+class ReentryCfg(BaseModel):
+    max_rank: int = Field(gt=0)
+    sma_days: int = Field(gt=0)
+    min_weeks_after_exit: int = Field(ge=0)
+
+
+class LadderCfg(BaseModel):
+    drawdowns: list[float]
+
+    @field_validator("drawdowns")
+    @classmethod
+    def _increasing_fractions(cls, v: list[float]) -> list[float]:
+        # Each level sells a share of what is left, and the last sells the rest,
+        # so the levels must deepen or a later level could fire before an earlier one.
+        if not v or not all(0 < d < 1 for d in v) or v != sorted(set(v)):
+            raise ValueError("exit.ladder.drawdowns must be strictly increasing fractions in (0, 1)")
+        return v
 
 
 class ExitCfg(BaseModel):
     rank_exit: int
-    exit_all_on_market_off: bool
-    trailing_stop_atr: float = Field(gt=0)
     exit_on_negative_momentum: bool
+    ladder: LadderCfg
+
+
+class RegimeCfg(BaseModel):
+    target_normal: float = Field(gt=0, le=1)
+    target_defensive: float = Field(gt=0, le=1)
+    confirm_weeks: int = Field(gt=0)
+    refill_below: float = Field(gt=0, le=1)
+    defensive_trim_band: float = Field(ge=0, lt=1)
 
 
 class SizingCfg(BaseModel):
     method: str
     max_position_weight: float = Field(gt=0, le=1)
     min_position_weight: float = Field(ge=0, le=1)
-    target_portfolio_vol: float = Field(gt=0)
-    scale_up_allowed: bool
     min_position_value: float = Field(ge=0)
-    covariance_window: int
 
 
 class ScheduleCfg(BaseModel):
@@ -138,7 +160,6 @@ class ScheduleCfg(BaseModel):
     exit_check: str
     entry_check: str
     execution_time: str
-    drift_tolerance: float
 
 
 class RiskCfg(BaseModel):
@@ -159,6 +180,17 @@ class RiskCfg(BaseModel):
         if v > 1.0:
             raise ValueError("max_gross_exposure > 1.0 would mean leverage; refused")
         return v
+
+
+class RiskDialLevels(BaseModel):
+    normal: float = Field(gt=0, le=1)
+    caution: float = Field(gt=0, le=1)
+
+
+class RiskDialCfg(BaseModel):
+    levels: RiskDialLevels
+    min_days_between_changes: int = Field(gt=0)
+    expiry_weeks: int = Field(gt=0)
 
 
 class AiCfg(BaseModel):
@@ -217,6 +249,7 @@ class AcceptanceCfg(BaseModel):
     min_sharpe: float
     max_annual_turnover: float
     max_single_window_contribution: float
+    beat_benchmark_margin: float = Field(ge=0)
 
 
 class BacktestCfg(BaseModel):
@@ -234,10 +267,13 @@ class Config(BaseModel):
     data: DataCfg
     signals: SignalsCfg
     entry: EntryCfg
+    reentry: ReentryCfg
     exit: ExitCfg
+    regime: RegimeCfg
     sizing: SizingCfg
     schedule: ScheduleCfg
     risk: RiskCfg
+    risk_dial: RiskDialCfg
     ai: AiCfg
     execution: ExecutionCfg
     backtest: BacktestCfg
@@ -252,11 +288,26 @@ class Config(BaseModel):
                 "the buffer, names oscillating at the boundary churn every "
                 "week and commissions eat the strategy (spec section 6)."
             )
-        if self.sizing.max_position_weight * self.risk.max_positions < 1.0:
-            # Not fatal — it just means the book can never be fully invested.
-            pass
         if self.sizing.min_position_weight >= self.sizing.max_position_weight:
             raise ValueError("sizing.min_position_weight must be < max_position_weight")
+        reg = self.regime
+        if reg.target_normal > self.risk.max_gross_exposure:
+            raise ValueError("regime.target_normal exceeds risk.max_gross_exposure (leverage)")
+        if not reg.target_defensive < reg.refill_below < reg.target_normal:
+            raise ValueError(
+                "regime needs target_defensive < refill_below < target_normal, or the "
+                "refill and the defensive trim would fight each other")
+        levels = self.risk_dial.levels
+        if not levels.caution < levels.normal <= reg.target_normal:
+            # The dial only ever lowers exposure. Never above the normal target.
+            raise ValueError(
+                "risk_dial needs caution < normal <= regime.target_normal: the dial "
+                "can lower the invested target, never raise it")
+        if levels.caution <= reg.target_defensive:
+            raise ValueError("risk_dial.caution must be above the defensive target; "
+                             "defensive is set only by the market filter")
+        if self.reentry.max_rank > self.exit.rank_exit:
+            raise ValueError("reentry.max_rank must not exceed exit.rank_exit")
 
     # ---- derived paths ---------------------------------------------------
 
@@ -320,6 +371,8 @@ if __name__ == "__main__":
     print(f"  universe     {c.universe.max_symbols} symbols from {c.universe.source}")
     print(f"  positions    {c.risk.max_positions} max, "
           f"{c.sizing.max_position_weight:.0%} cap each")
+    print(f"  invested     {c.regime.target_normal:.0%} normal, "
+          f"{c.regime.target_defensive:.0%} defensive")
     print(f"  entry/exit   rank <= {c.entry.rank_threshold} in, "
           f"> {c.exit.rank_exit} out")
     print(f"  leverage     {c.risk.max_gross_exposure:.2f}x (1.00 = none)")

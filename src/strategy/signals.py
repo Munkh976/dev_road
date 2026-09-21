@@ -44,7 +44,8 @@ class SignalFrame:
     signal_date: pd.Timestamp
     market_on: bool
     table: pd.DataFrame  # index=symbol, cols: close, mom_6m, mom_12m,
-                         # blended_momentum, vol_63, score, rank, atr_20
+                         # blended_momentum, vol_63, score, rank, atr_20,
+                         # sma_reentry
     benchmark_close: float | None = None   # what market_on was decided from,
     benchmark_sma: float | None = None     # kept so the report can show it
 
@@ -75,6 +76,7 @@ class SignalPanel:
     score: pd.DataFrame
     rank: pd.DataFrame           # float with NaN; 1 = best, unranked = NaN
     atr_20: pd.DataFrame
+    sma_reentry: pd.DataFrame    # trailing SMA of the close, for the re-entry gate
     in_universe: pd.DataFrame    # bool: was the symbol in force on that date
     market_on: pd.Series         # bool, False wherever it cannot be evaluated
     benchmark_close: pd.Series
@@ -94,6 +96,7 @@ class SignalPanel:
             "score": self.score.loc[ts],
             "rank": self.rank.loc[ts].astype("Int64"),
             "atr_20": self.atr_20.loc[ts],
+            "sma_reentry": self.sma_reentry.loc[ts],
         })
         table.index.name = "symbol"
         # A symbol with no bar today has no price to trade at, so no row.
@@ -170,6 +173,12 @@ def average_true_range(
         np.maximum((high - prev_close).abs(), (low - prev_close).abs()),
     )
     return true_range.rolling(period, min_periods=period).mean()
+
+
+def trailing_sma(closes: pd.DataFrame, days: int) -> pd.DataFrame:
+    """Trailing simple moving average of the close. The window must be full, and
+    a missing bar inside it makes the result NaN (never forward-filled)."""
+    return closes.rolling(days, min_periods=days).mean()
 
 
 def _benchmark_sma(benchmark_closes: pd.Series, cfg: Config) -> pd.Series:
@@ -250,6 +259,7 @@ def compute_panel(
         closes=px, mom_6m=mom_6m, mom_12m=mom_12m, blended_momentum=blended,
         vol_63=vol, score=score, rank=rank,
         atr_20=average_true_range(hi, lo, px, cfg.signals.atr.period),
+        sma_reentry=trailing_sma(px, cfg.reentry.sma_days),
         in_universe=mask,
         market_on=market_regime(bench_close, cfg),
         benchmark_close=bench_close, benchmark_sma=bench_sma,

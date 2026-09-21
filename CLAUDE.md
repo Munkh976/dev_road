@@ -81,10 +81,11 @@ exactly one place. `BrokerInterface` deliberately has no
 
 ## Current status
 
-**Built and tested (343 tests passing):**
+**Built and tested (see `python -m pytest tests\ -q` for the current count):**
 
 - `src/config.py` — typed pydantic loader, safety validators
-- `db/schema.sql` — 15 tables, 4 views (adds `contract_info`, `universe_snapshots`)
+- `db/schema.sql` — 16 tables, 4 views (adds `contract_info`, `universe_snapshots`,
+  `risk_dial_changes`)
 - `scripts/init_db.py` — idempotent
 - `src/data/pacing.py` — token bucket + sliding window
 - `src/data/cache.py` — parquet cache, incremental merge, bar validation
@@ -101,11 +102,19 @@ exactly one place. `BrokerInterface` deliberately has no
   panel; `compute()` cuts at `as_of`. Look-ahead tested per signal.
 - `src/strategy/run_signals.py` — cache -> `signals` table + `runs` row; halts
   on a stale SPY. Run against the real cache once.
-- `src/strategy/rules.py` — E1–E9, X1–X4, sizing (`size_new_positions` enforces E7;
-  bounds hold with few names, see spec §8)
+- `src/strategy/rules.py` — E1–E8, R1, T1, X1, X4, the laddered stop, sizing
+  (`size_new_positions` enforces E7; bounds hold with few names, see spec §8).
+  **v2.0.0**: E9, X2, X3 and the volatility target are retired (spec §0)
+- `src/strategy/regime.py` — graded market filter, a pure fold over weekly readings
+- `src/strategy/plan.py` — the weekly order plan (exits, ladder, trims, top-ups,
+  refill); the one place backtest and live decide what to trade
+- `src/risk/dial.py` — live-only risk dial (85%/60%, once a month, journal reason,
+  4-week expiry, counts as an override); the backtest never reads it
 - `src/backtest/walkforward.py` — walk-forward engine (spec 12.1), `check_acceptance`
-  A1–A6, report. Tested on synthetic markets only (hand-checked trades, whole-engine
-  look-ahead, deliberate breaks); **never run on real data yet**
+  A1–A6 (A1 is SPY + 2.0 points since v2), report. Tested on synthetic markets only
+  (hand-checked trades, whole-engine look-ahead, deliberate breaks); **v2 has never
+  been run on real data**. **v1 was run once and FAILED** (git tag `backtest-v1`,
+  spec 1.0.5): its verdict is final and it is not rerun with new parameters
 - `src/data/universe.py` also has `point_in_time_universe` (spec 2.3), used by the backtest
 - `src/runlog.py` — shared `runs` row start/finish with the config hash
 - `src/execution/broker.py` — interface and dataclasses
@@ -140,8 +149,10 @@ Each step is useless without the one before it.
 7. ~~Signals~~ ✅ (explicit look-ahead tests)
 8. ~~Rules + sizing~~ ✅ (moved ahead of the backtest, which needs them)
 9. ~~Backtest engine~~ ✅ (synthetic data only; the first real run is a manual step)
-10. **Acceptance gate (A1–A6)** — run the backtest on the full cache, review, then
-    **if A1 fails, stop and buy SPY** ← next
+10. **Acceptance gate (A1–A6)** — v1 ran and **failed** (tag `backtest-v1`). v2 is
+    written (spec 2.0.0) and its first real run is a manual step ← next.
+    **If v2 fails, development as a trading strategy stops; buy SPY.** Either way v2
+    runs on paper only
 11. Risk engine
 12. AI veto layer
 13. Report + approval UI
@@ -156,7 +167,9 @@ pre-committed rather than made later while attached to weeks of work.
 
 ## The parameter budget
 
-**Five changes total**, logged in the `parameter_changes` table.
+**Five changes total**, logged in the `parameter_changes` table. **v2 spent four**
+(invested target, graded filter, ladder and re-entry, ten positions; spec §12). The
+last one is reserved for a problem found in paper trading, not for tuning the backtest.
 
 Every adjustment made after seeing backtest results spends out-of-sample
 validity. Ten tweaks and the backtest is fiction.
@@ -240,6 +253,9 @@ If a request would do any of these, say so rather than complying:
 - Skip build-order steps (e.g. wire IBKR execution before the backtest)
 - Set `require_manual_approval: false`
 - Edit `config.yaml` post-backtest without logging the change
+- Add a take-profit rule, or simulate the risk dial in the backtest (a take-profit
+  spends budget; the dial is live only, spec §6.3 and §8.2)
+- Retune v2 to pass, or write a v3, after a failed acceptance run
 
 None of these are hypothetical failure modes; each is a known way that
 systematic trading projects lose real money.

@@ -1,9 +1,9 @@
 """
 Entry and exit rules (spec sections 5 and 6) and position sizing (section 8).
 
-Rules return a decision plus the RULE CODE that fired (E1..E9, X1..X4). The
-code is written to the proposals table so that months later you can answer
-"why did I own this?" without re-deriving anything.
+Rules return a decision plus the RULE CODE that fired (E1..E8, R1, T1, X1, X4,
+L1..Ln). The code is written to the proposals table so that months later you
+can answer "why did I own this?" without re-deriving anything.
 
 Pure functions: no IO, no broker, no database. The backtest and the live path
 call exactly these, which is what makes a backtest evidence about live.
@@ -12,6 +12,11 @@ Fail closed, throughout. A check that cannot be evaluated (a NaN signal, a
 sector that is unknown, no high-water mark for a position) counts as a
 failure: an entry is blocked and an exit fires. The alternative is buying or
 holding on the strength of a number that does not exist.
+
+v2.0.0 retired three v1 rules. X2 (sell everything when SPY is below its 200-day
+SMA) became the graded filter in `regime.py`. X3 (3 x ATR stop) became the
+laddered stop below. E9 (two new names a month) became the refill toward the
+invested target in `plan.py`.
 
 E7 (minimum position value) is not in `evaluate_entries`: it needs the sized
 dollar value, and sizing needs to know who was selected. It is enforced by
@@ -29,23 +34,32 @@ import pandas as pd
 from src.config import Config
 from src.strategy.signals import SignalFrame
 
-# Not tunables. FULL_WEIGHT is "100% of equity"; ZERO is the sign change that
-# X4 means by "thesis inverted" (E3's threshold is configurable, this is not).
+# Not tunables. FULL_WEIGHT is "100% of equity" and "the whole position"; ZERO is
+# the sign change that X4 means by "thesis inverted" (E3's threshold is
+# configurable, this is not).
 FULL_WEIGHT = 1.0
 ZERO = 0.0
-
-# Which rule is reported when several fire on the same position. Risk first:
-# the regime, then the disaster stop, then the thesis, then the rank buffer.
-# Every rule that fired is listed in `detail` regardless.
-EXIT_PRIORITY = ("X2", "X3", "X4", "X1")
+NO_PEAK = float("-inf")      # a top-up with no prior peak to beat (a regime restore)
 
 
 @dataclass
 class ExitDecision:
+    """What to sell of one held name. `sell_fraction` is a share of the shares
+    held: 0 = keep, 1 = the whole position."""
+
     symbol: str
-    should_exit: bool
-    rule: str | None = None        # X1|X2|X3|X4
+    sell_fraction: float = ZERO
+    rule: str | None = None        # X1 | X4 | L1..Ln
     detail: str | None = None
+    levels: int = 0                # ladder levels this sale fires
+
+    @property
+    def should_sell(self) -> bool:
+        return self.sell_fraction > ZERO
+
+    @property
+    def full_exit(self) -> bool:
+        return self.sell_fraction >= FULL_WEIGHT
 
 
 @dataclass
@@ -67,64 +81,85 @@ def evaluate_exits(
     held: dict[str, float],
     signals: SignalFrame,
     position_highs: dict[str, float],
-    atr: dict[str, float],
+    ladder_fired: dict[str, int],
     cfg: Config,
 ) -> list[ExitDecision]:
-    """Check X1-X4 against every open position.
+    """Check X1, X4 and the laddered stop against every open position.
 
     X1  rank > rank_exit          (buffer above entry rank prevents churn)
-    X2  market_on is False        (exit everything to cash)
-    X3  close < high - 3*ATR      (wide trailing disaster stop)
     X4  blended_momentum < 0      (thesis inverted)
+    L1..Ln  laddered trailing stop, measured from the highest CLOSE since entry.
+            With drawdowns (12%, 20%, 28%): at -12% sell a third, at -20% another
+            third, at -28% the rest. Each level fires at most once per position.
 
-    Exits are checked WEEKLY while entries are monthly. That asymmetry is
-    deliberate: risk control responds fast, position-taking does not.
+    Exits are checked WEEKLY. Risk control responds fast; position-taking does
+    not need to.
+
+    Ladder arithmetic. `ladder_fired[s]` is how many levels have already fired.
+    If `c` levels are now crossed, `c - fired` are new, and they sell
+    `(c - fired) / (n - fired)` of the CURRENT shares. That is a third of the
+    original, then half of what is left (another third), then all of it, and it
+    stays well-defined after a top-up. A gap that crosses several levels at once
+    sells them all together. Crossing the last level sells everything.
+
+    Why a ladder, not one stop. v1's 3 x ATR stop fired at 6-12%, not the 15-25%
+    the spec claimed, and was the most common exit (177 of 391 sells). A stop that
+    tight ejects momentum names on ordinary noise. The ladder gives up a third
+    at 12% but keeps the rest through a normal pullback.
 
     `held` maps symbol -> quantity (the keys are what matter). One decision is
-    returned per held symbol, sorted by symbol. A position whose X1, X3 or X4
-    cannot be evaluated exits under that rule: a name with no rank today (it
-    left the universe, or has no bar) cannot be shown to still belong.
+    returned per held symbol, sorted by symbol. A position whose close or high
+    cannot be read, or whose X1 or X4 cannot be evaluated, is sold in full: a name
+    with no rank today (it left the universe, or has no bar) cannot be shown to
+    still belong.
     """
     table = signals.table
+    drawdowns = cfg.exit.ladder.drawdowns
+    n = len(drawdowns)
+    last = f"L{n}"
+    priority = (last, "X4", "X1")          # disaster stop, thesis, then the rank buffer
     out: list[ExitDecision] = []
     for sym in sorted(held):
         row = table.loc[sym] if sym in table.index else None
-        fired: dict[str, str] = {}
-
-        if cfg.exit.exit_all_on_market_off and not signals.market_on:
-            fired["X2"] = "market_on is False"
+        full: dict[str, str] = {}
+        fired = ladder_fired.get(sym, 0)
 
         close = None if row is None else row["close"]
-        high, a = position_highs.get(sym), atr.get(sym)
-        if _missing(close) or _missing(high) or _missing(a):
-            fired["X3"] = "close, position high or ATR unavailable; cannot evaluate"
+        high = position_highs.get(sym)
+        crossed = 0
+        ladder_detail = ""
+        if _missing(close) or _missing(high):
+            full[last] = "close or position high unavailable; cannot evaluate"
         else:
-            stop = high - cfg.exit.trailing_stop_atr * a
-            if close < stop:
-                fired["X3"] = (
-                    f"close {close:.2f} < stop {stop:.2f} "
-                    f"(high {high:.2f} - {cfg.exit.trailing_stop_atr} x ATR {a:.2f})"
-                )
+            crossed = sum(close <= high * (FULL_WEIGHT - d) for d in drawdowns)
+            ladder_detail = (f"close {close:.2f} is {FULL_WEIGHT - close / high:.1%} below "
+                             f"high {high:.2f}; levels crossed {crossed} of {n}, fired {fired}")
+            if crossed >= n:
+                full[last] = ladder_detail
 
         if cfg.exit.exit_on_negative_momentum:
             momentum = None if row is None else row["blended_momentum"]
             if _missing(momentum):
-                fired["X4"] = "blended momentum unavailable; cannot evaluate"
+                full["X4"] = "blended momentum unavailable; cannot evaluate"
             elif momentum < ZERO:
-                fired["X4"] = f"blended momentum {momentum:.4f} < 0"
+                full["X4"] = f"blended momentum {momentum:.4f} < 0"
 
         rank = signals.rank_of(sym)
         if rank is None:
-            fired["X1"] = "no rank today (not in universe or no signal); cannot evaluate"
+            full["X1"] = "no rank today (not in universe or no signal); cannot evaluate"
         elif rank > cfg.exit.rank_exit:
-            fired["X1"] = f"rank {rank} > {cfg.exit.rank_exit}"
+            full["X1"] = f"rank {rank} > {cfg.exit.rank_exit}"
 
-        if fired:
-            rule = next(code for code in EXIT_PRIORITY if code in fired)
-            detail = "; ".join(f"{code}: {fired[code]}" for code in EXIT_PRIORITY if code in fired)
-            out.append(ExitDecision(sym, True, rule, detail))
+        if full:
+            rule = next(code for code in priority if code in full)
+            detail = "; ".join(f"{code}: {full[code]}" for code in priority if code in full)
+            out.append(ExitDecision(sym, FULL_WEIGHT, rule, detail, levels=n - fired))
+        elif crossed > fired:
+            new = crossed - fired
+            out.append(ExitDecision(sym, new / (n - fired), f"L{crossed}",
+                                    f"L{crossed}: {ladder_detail}", levels=new))
         else:
-            out.append(ExitDecision(sym, False))
+            out.append(ExitDecision(sym))
     return out
 
 
@@ -138,19 +173,32 @@ def evaluate_entries(
     ai_flags: dict[str, bool | None],
     cfg: Config,
     *,
+    regime_normal: bool,
     sectors: dict[str, str | None] | None = None,
     proposed_weight: float | None = None,
+    exit_weeks: dict[str, int] | None = None,
 ) -> list[EntryDecision]:
-    """Check E1-E9 against ranked candidates.
+    """Check E1-E8 (and the re-entry gate R1) against ranked candidates.
 
-    E9 (max 2 new per rebalance) is what spreads the initial $15,000 entry
-    across several months without requiring any market timing.
+    There is no cap on new names per week. v1's E9 (two a month) left the book 35%
+    invested on average; v2 refills toward the invested target instead, and
+    `plan.py` decides how many of these eligible names that takes.
 
     Candidates are every ranked symbol not already held, best rank first, and
     every rule is evaluated for each (no short-circuit) so `blocked_by` is the
     full list. Slots are handed out greedily in rank order: only a candidate
-    that passes everything consumes an E6 position slot, an E9 new-entry slot
-    and sector room, so a name blocked by E8 does not starve the next one.
+    that passes everything consumes a position slot (E6) and sector room (E8),
+    so a name blocked by E8 does not starve the next one.
+
+    E1 is the graded filter: `regime_normal` is False in the DEFENSIVE mode, which
+    takes no new names. One reading of SPY below its SMA does not change the mode.
+
+    R1 applies only to a name previously SOLD IN FULL, given as `exit_weeks`
+    (symbol -> whole weeks since that exit). It may return only when it ranks
+    within `reentry.max_rank`, closes above its own SMA, and at least
+    `min_weeks_after_exit` weeks have passed. v1 only barred a rebuy in the week of
+    the stop; v2 gates it on recovery, because waiting says nothing about whether
+    the name recovered and the SMA does.
 
     `sector_weights` is the current weight of each sector (fraction of equity).
     `sectors` maps a candidate to its sector; without one E8 cannot be
@@ -168,6 +216,8 @@ def evaluate_entries(
     ranked = table[table["rank"].notna()].sort_values("rank")
     sector_now = dict(sector_weights)
     veto_on = cfg.ai.enabled and cfg.entry.require_ai_veto_pass
+    reentry = cfg.reentry
+    exited = exit_weeks or {}
 
     new_count = 0
     out: list[EntryDecision] = []
@@ -176,7 +226,7 @@ def evaluate_entries(
             continue
         blocked: list[str] = []
 
-        if cfg.entry.require_market_on and not signals.market_on:
+        if cfg.entry.require_market_on and not regime_normal:
             blocked.append("E1")
         if not row["rank"] <= cfg.entry.rank_threshold:
             blocked.append("E2")
@@ -191,8 +241,12 @@ def evaluate_entries(
         sector = None if sectors is None else sectors.get(sym)
         if sector is None or sector_now.get(sector, ZERO) + weight > cfg.risk.max_sector_weight:
             blocked.append("E8")
-        if new_count >= cfg.entry.max_new_per_rebalance:
-            blocked.append("E9")
+        if sym in exited and not (
+            exited[sym] >= reentry.min_weeks_after_exit
+            and row["rank"] <= reentry.max_rank
+            and row["close"] > row["sma_reentry"]                     # NaN fails
+        ):
+            blocked.append("R1")
 
         eligible = not blocked
         if eligible:
@@ -202,27 +256,86 @@ def evaluate_entries(
     return out
 
 
+def evaluate_topups(
+    signals: SignalFrame,
+    partials: dict[str, float],
+    weights: dict[str, float],
+    sector_weights: dict[str, float],
+    ai_flags: dict[str, bool | None],
+    cfg: Config,
+    *,
+    regime_normal: bool,
+    sectors: dict[str, str | None] | None = None,
+) -> list[EntryDecision]:
+    """Which partly-sold positions may be topped up back toward their target.
+
+    `partials` maps a held name to the prior peak close it must now beat (T1: no
+    top-up until it closes ABOVE that peak, at the weekly check). A name that had a
+    ladder sale has a real peak; a name that was only trimmed pro rata by the
+    defensive filter has `NO_PEAK`, since a pro rata trim says nothing about the
+    name and it should simply come back when the filter does. The same E1-E5 conditions as a new entry apply, and E8 is
+    checked for the extra weight the top-up could add (up to the position cap).
+    A name that is still held does not take an E6 slot.
+
+    Why the peak. A name that fell 12% and has recovered only part of it is still
+    a name that just showed it can fall; buying back before it takes out the old
+    high is averaging down into weakness. Selling early is what the ladder costs;
+    this is how a name is bought back only once it resumes.
+    """
+    table = signals.table
+    veto_on = cfg.ai.enabled and cfg.entry.require_ai_veto_pass
+    sector_now = dict(sector_weights)
+    ranked = table[table["rank"].notna()].sort_values("rank")
+    out: list[EntryDecision] = []
+    for sym, row in ranked.iterrows():
+        if sym not in partials:
+            continue
+        blocked: list[str] = []
+        if cfg.entry.require_market_on and not regime_normal:
+            blocked.append("E1")
+        if not row["rank"] <= cfg.entry.rank_threshold:
+            blocked.append("E2")
+        if not row["blended_momentum"] > cfg.entry.min_momentum:
+            blocked.append("E3")
+        if not row["vol_63"] <= cfg.entry.max_volatility:
+            blocked.append("E4")
+        if veto_on and ai_flags.get(sym) is True:
+            blocked.append("E5")
+        sector = None if sectors is None else sectors.get(sym)
+        room = cfg.sizing.max_position_weight - weights.get(sym, ZERO)
+        if sector is None or sector_now.get(sector, ZERO) + room > cfg.risk.max_sector_weight:
+            blocked.append("E8")
+        if not row["close"] > partials[sym]:                          # NaN fails
+            blocked.append("T1")
+        eligible = not blocked
+        if eligible:
+            sector_now[sector] = sector_now.get(sector, ZERO) + room
+        out.append(EntryDecision(sym, eligible, blocked, int(row["rank"])))
+    return out
+
+
 # -------------------------------------------------------------------- sizing
 
 
-def _bounded_weights(raw: pd.Series, lo: float, hi: float) -> pd.Series:
-    """Weights proportional to `raw`, each held within [lo, hi].
+def _bounded_weights(raw: pd.Series, lo: float, hi: float, budget: float) -> pd.Series:
+    """Weights proportional to `raw` that sum to `budget`, each held within [lo, hi].
 
     Spec section 8 says "clip, then renormalize". Taken literally that breaks
-    the cap it just applied: two names at the 20% cap renormalize to 50% each.
-    Here a name that hits a bound stays there and the rest share what is left,
-    so the bounds hold in the result. When every name is capped the weights sum
-    to less than 1 and the remainder is cash. The two agree whenever nothing is
-    clipped, and for the usual six-name book.
+    the cap it just applied: two names at the cap renormalize to 50% each. Here a
+    name that hits a bound stays there and the rest share what is left, so the
+    bounds hold in the result. When every name is capped the weights sum to less
+    than `budget` and the remainder is cash. The two agree whenever nothing is
+    clipped. (Unchanged from v1.0.4 except that the budget is the invested target
+    rather than 100%.)
     """
     fixed: dict[str, float] = {}
     while True:
         free = [s for s in raw.index if s not in fixed]
-        left = FULL_WEIGHT - sum(fixed.values())
+        left = budget - sum(fixed.values())
         if not free:
             break
         if left <= ZERO:
-            raise ValueError("position bounds are infeasible: minimum weights exceed 100%")
+            raise ValueError("position bounds are infeasible: minimum weights exceed the target")
         cand = raw[free] / raw[free].sum() * left
         violators = cand[(cand > hi) | (cand < lo)]
         if violators.empty:
@@ -231,82 +344,82 @@ def _bounded_weights(raw: pd.Series, lo: float, hi: float) -> pd.Series:
         for s, w in violators.items():
             fixed[s] = min(max(w, lo), hi)
     weights = pd.Series(fixed).reindex(raw.index)
-    if weights.sum() > FULL_WEIGHT + np.finfo(float).eps * len(weights):
-        raise ValueError("position bounds are infeasible: minimum weights exceed 100%")
+    if weights.sum() > budget + np.finfo(float).eps * len(weights):
+        raise ValueError("position bounds are infeasible: minimum weights exceed the target")
     return weights
 
 
 def size_positions(
     symbols: list[str],
     vol: pd.Series,
-    returns: pd.DataFrame,
     equity: float,
+    invested_target: float,
     cfg: Config,
 ) -> pd.Series:
-    """Inverse-volatility weights, clipped, then scaled to a portfolio vol
-    target. Scaling is DOWN ONLY — never lever up to hit the target.
+    """Inverse-volatility weights, bounded, scaled to the invested target.
 
-    A scalar below 1.0 leaves the book deliberately under-invested because
-    its constituents are volatile. That is the mechanism working.
+    Weights are proportional to 1 / vol_63, sum to `invested_target` (85% while
+    the market filter is on), and each sits within the position bounds (5%-15%).
+    A name at a bound stays there and the remainder is cash. v1 also scaled down
+    to a 15% portfolio volatility target; that left the book 35% invested and is
+    gone. The invested target is the only thing that sets the total.
 
-    Returns target dollar values indexed by symbol. The remainder is cash.
-
-    `vol` is annualized 63-day volatility per symbol; `returns` are daily
-    returns (rows up to the decision date, NaN where a bar was missing). The
-    covariance uses the last `covariance_window` rows and must be complete: an
-    incomplete window means the volatility inputs are not trustworthy, so it
-    raises instead of guessing. Gross exposure never exceeds
-    `risk.max_gross_exposure`, whatever `scale_up_allowed` says.
+    Returns target dollar values indexed by symbol. `vol` is annualized 63-day
+    volatility per symbol; a missing or non-positive value raises rather than
+    guessing (fail closed). Gross exposure never exceeds `risk.max_gross_exposure`.
     """
-    sz = cfg.sizing
     if not symbols:
         return pd.Series(dtype=float)
     v = vol.reindex(symbols)
     if v.isna().any() or not (v > ZERO).all():
         bad = v[v.isna() | ~(v > ZERO)].index.tolist()
         raise ValueError(f"cannot size {bad}: volatility missing or not positive")
-
-    weights = _bounded_weights(FULL_WEIGHT / v, sz.min_position_weight, sz.max_position_weight)
-
-    window = returns[symbols].tail(sz.covariance_window)
-    if len(window) < sz.covariance_window or window.isna().any().any():
-        raise ValueError(
-            f"covariance window incomplete: need {sz.covariance_window} full rows of returns"
-        )
-    w = weights.to_numpy()
-    port_vol = float(np.sqrt(w @ window.cov().to_numpy() @ w)
-                     * np.sqrt(cfg.signals.volatility.annualize))
-
-    scalar = FULL_WEIGHT if port_vol <= ZERO else sz.target_portfolio_vol / port_vol
-    if not sz.scale_up_allowed:
-        scalar = min(FULL_WEIGHT, scalar)
-    scalar = min(scalar, cfg.risk.max_gross_exposure / weights.sum())
-    return weights * scalar * equity
+    budget = min(invested_target, cfg.risk.max_gross_exposure)
+    weights = _bounded_weights(
+        FULL_WEIGHT / v, cfg.sizing.min_position_weight, cfg.sizing.max_position_weight, budget)
+    return weights * equity
 
 
 def size_new_positions(
-    symbols: list[str],
+    book: list[str],
     new: list[str],
+    topups: list[str],
+    held_values: dict[str, float],
     vol: pd.Series,
-    returns: pd.DataFrame,
     equity: float,
+    invested_target: float,
     cfg: Config,
-) -> tuple[pd.Series, list[str]]:
-    """Size the whole book and enforce E7 on the new names.
+) -> tuple[dict[str, float], list[str]]:
+    """Dollars to BUY for the new names and the top-ups, with E7 enforced.
 
-    `symbols` is everything that will be held (existing plus `new`). A new name
-    whose target value is under `sizing.min_position_value` is dropped and the
-    book resized, smallest first, until every new name clears it. Existing
-    positions are never dropped here; exits are X1-X4's job. Returns the
-    target values and the E7-blocked symbols in the order dropped.
+    `book` is everything that will be held (kept positions plus `new`).
+    `held_values` is the current dollar value of every kept position. Buying is
+    limited to the room under the target, `invested_target x equity` less what is
+    already held: top-ups first (each up to its target value), then the new names
+    share what is left pro rata. So a refill can never push the book past the
+    target, whatever the allocation says.
+
+    A new name whose dollars fall under `sizing.min_position_value` is dropped and
+    the book resized, smallest first, until every new name clears it (inclusive).
+    Existing positions and top-ups are never dropped here; exits are X1/X4/the
+    ladder's job. Returns the buys and the E7-blocked symbols in order dropped.
     """
-    names, dropped = list(symbols), []
+    names, dropped = list(book), []
+    cap = min(invested_target, cfg.risk.max_gross_exposure) * equity
     while True:
-        targets = size_positions(names, vol, returns, equity, cfg)
-        small = [s for s in new if s in targets.index
-                 and not targets[s] >= cfg.sizing.min_position_value]
+        alloc = size_positions(names, vol, equity, invested_target, cfg)
+        room = max(ZERO, cap - sum(held_values.values()))
+        buys: dict[str, float] = {}
+        for s in topups:
+            buys[s] = min(max(ZERO, alloc[s] - held_values[s]), room)
+            room -= buys[s]
+        want_new = {s: alloc[s] for s in names if s in new}
+        total = sum(want_new.values())
+        scale = FULL_WEIGHT if total <= room else room / total
+        buys.update({s: d * scale for s, d in want_new.items()})
+        small = [s for s in want_new if not buys[s] >= cfg.sizing.min_position_value]
         if not small:
-            return targets, dropped
-        worst = min(small, key=lambda s: (targets[s], s))
+            return buys, dropped
+        worst = min(small, key=lambda s: (buys[s], s))
         names.remove(worst)
         dropped.append(worst)

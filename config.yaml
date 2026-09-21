@@ -1,10 +1,10 @@
-# weekly_momentum_v1 — machine-readable parameters
+# weekly_momentum_v2 — machine-readable parameters
 # Companion to docs/STRATEGY_SPEC.md. Every number here is justified there.
 # Code reads THIS file. No magic numbers anywhere else.
 
 strategy:
-  name: weekly_momentum_v1
-  version: 1.0.5
+  name: weekly_momentum_v2
+  version: 2.0.0
   spec: docs/STRATEGY_SPEC.md
 
 # ---------------------------------------------------------------- capital
@@ -63,48 +63,67 @@ signals:
 # ---------------------------------------------------------------- entry
 entry:
   require_market_on: true
-  rank_threshold: 6
+  rank_threshold: 10           # v2 change 4 (was 6)
   min_momentum: 0.0
   max_volatility: 0.80
   require_ai_veto_pass: true
-  max_new_per_rebalance: 2
+  # E9 (max_new_per_rebalance) is gone in v2.0.0: refill toward the target replaces it
+
+# After a FULL exit a name may be bought again only when all of these hold (spec 6.2).
+reentry:
+  max_rank: 10
+  sma_days: 50                 # close must be above its own 50-day SMA
+  min_weeks_after_exit: 1
 
 # ---------------------------------------------------------------- exit
 exit:
-  rank_exit: 10                # buffer vs entry rank 6 — prevents churn
-  exit_all_on_market_off: true
-  trailing_stop_atr: 3.0       # wide by design; see spec section 6
+  rank_exit: 16                # buffer vs entry rank 10 — prevents churn
   exit_on_negative_momentum: true
+  ladder:                      # trailing stop from the highest CLOSE since entry (spec 6.1)
+    drawdowns: [0.12, 0.20, 0.28]   # sell 1/3, another 1/3, then the rest; each fires once
+
+# Graded market filter and the invested-fraction target (spec 4.1, 8).
+regime:
+  target_normal: 0.85          # invested fraction while the filter is on
+  target_defensive: 0.40       # set ONLY by the market filter
+  confirm_weeks: 2             # consecutive weekly readings needed to switch
+  refill_below: 0.80           # invested below this -> buy toward the target
+  defensive_trim_band: 0.05    # defensive: trim pro rata when invested > target + band
 
 # ---------------------------------------------------------------- sizing
 sizing:
   method: inverse_volatility
-  max_position_weight: 0.20
-  min_position_weight: 0.08
-  target_portfolio_vol: 0.15
-  scale_up_allowed: false      # never lever to hit the vol target
+  max_position_weight: 0.15
+  min_position_weight: 0.05
   min_position_value: 1000
-  covariance_window: 63
 
 # ---------------------------------------------------------------- schedule
 schedule:
   timezone: America/New_York
   data_refresh: "SAT 18:00"
   exit_check: weekly
-  entry_check: monthly         # first Monday
+  entry_check: weekly          # refill toward the target; no monthly cap (v2)
   execution_time: "MON 09:45"  # avoid the opening auction
-  drift_tolerance: 0.25
 
 # ---------------------------------------------------------------- risk
 risk:
   max_gross_exposure: 1.00     # NO LEVERAGE
-  max_positions: 6
+  max_positions: 10
   max_sector_weight: 0.40
   max_orders_per_day: 8
   max_order_value: 4000
   halt_on_drawdown: 0.20
   halt_on_broker_disconnect: true
   require_manual_approval: true
+
+# LIVE ONLY. Not simulated in the backtest (spec 8.2). Caps the invested target
+# below the regime target; can never raise it and can never exceed `normal`.
+risk_dial:
+  levels:
+    normal: 0.85
+    caution: 0.60
+  min_days_between_changes: 30
+  expiry_weeks: 4
 
 # ---------------------------------------------------------------- ai layer
 ai:
@@ -143,6 +162,7 @@ backtest:
   parameter_change_budget: 5
   acceptance:
     beat_benchmark: true
+    beat_benchmark_margin: 0.02  # A1: CAGR >= SPY + 2.0 points (v2; harder, not easier)
     max_drawdown: 0.35
     worst_rolling_12m: -0.30
     min_sharpe: 0.6

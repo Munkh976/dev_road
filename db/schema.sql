@@ -1,4 +1,4 @@
--- weekly_momentum_v1 — operational store
+-- weekly_momentum_v2 — operational store
 --
 -- SQLite holds RECORDS (runs, proposals, approvals, orders, fills, journal).
 -- Parquet holds PRICE HISTORY. IBKR holds POSITIONS AND BALANCES.
@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS proposals (
     created_at        TEXT NOT NULL,
     symbol            TEXT NOT NULL,
     action            TEXT NOT NULL,             -- BUY|SELL
-    reason            TEXT NOT NULL,             -- E1..E9 / X1..X4 rule code
+    reason            TEXT NOT NULL,             -- rule code: ENTRY/REENTRY/TOPUP/RESTORE, X1/X4, L1..L3, CAP_TRIM/REGIME_TRIM
     reason_detail     TEXT,
     rank              INTEGER,
     target_weight     REAL,
@@ -287,6 +287,26 @@ CREATE INDEX IF NOT EXISTS idx_journal_week ON journal(week_of DESC);
 
 
 -- ===========================================================================
+-- risk_dial_changes — LIVE ONLY manual cap on the invested target (spec 8.2).
+-- Every change needs a journal entry (journal_id is NOT NULL) and counts as an
+-- override in the adherence query and v_override_log. The rules that limit it
+-- (once per 30 days, 4-week expiry, never above the normal target, no way to
+-- set the defensive level) are enforced in src/risk/dial.py; the CHECKs here are
+-- the last line, not the only one.
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS risk_dial_changes (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    changed_at        TEXT NOT NULL,             -- ISO8601 UTC
+    level             TEXT NOT NULL CHECK (level IN ('normal', 'caution')),
+    target            REAL NOT NULL,             -- invested fraction this level asked for
+    reason            TEXT NOT NULL CHECK (length(trim(reason)) > 0),
+    journal_id        INTEGER NOT NULL REFERENCES journal(id),
+    expires_at        TEXT NOT NULL              -- reverts to normal at this time
+);
+CREATE INDEX IF NOT EXISTS idx_risk_dial_changed ON risk_dial_changes(changed_at DESC);
+
+
+-- ===========================================================================
 -- parameter_changes — the 5-change budget from spec section 12.
 -- ===========================================================================
 CREATE TABLE IF NOT EXISTS parameter_changes (
@@ -329,19 +349,34 @@ ORDER BY p.action DESC, p.rank ASC;
 
 DROP VIEW IF EXISTS v_override_log;
 CREATE VIEW v_override_log AS
-SELECT
-    a.decided_at,
-    p.symbol,
-    p.action,
-    p.reason,
-    a.decision,
-    a.override,
-    a.override_reason,
-    ROUND(p.estimated_value, 2) AS est_value
-FROM approvals a
-JOIN proposals p ON p.proposal_id = a.proposal_id
-WHERE a.override = 1
-ORDER BY a.decided_at DESC;
+SELECT decided_at, symbol, action, reason, decision, override, override_reason, est_value
+FROM (
+    SELECT
+        a.decided_at,
+        p.symbol,
+        p.action,
+        p.reason,
+        a.decision,
+        a.override,
+        a.override_reason,
+        ROUND(p.estimated_value, 2) AS est_value
+    FROM approvals a
+    JOIN proposals p ON p.proposal_id = a.proposal_id
+    WHERE a.override = 1
+    UNION ALL
+    -- a manual risk dial change is an override of the system, too
+    SELECT
+        d.changed_at,
+        'RISK DIAL',
+        d.level,
+        'manual invested-target cap ' || ROUND(d.target * 100) || '%',
+        'DIAL',
+        1,
+        d.reason,
+        NULL
+    FROM risk_dial_changes d
+)
+ORDER BY decided_at DESC;
 
 
 DROP VIEW IF EXISTS v_run_health;
