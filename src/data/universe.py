@@ -311,6 +311,34 @@ def point_in_time_universe(
     return (rank <= u.max_symbols).astype(bool)
 
 
+def quarterly_universe(daily: pd.DataFrame) -> pd.DataFrame:
+    """Hold membership between rebuilds, as live does (spec 2.2, 2.3).
+
+    `daily` is `point_in_time_universe`'s per-date answer. A rebuild happens on
+    the first trading day of each calendar quarter, from data through that
+    day's close, and its membership holds until the next rebuild. One extra
+    rebuild happens the first day the daily answer is non-empty, because the
+    data starts mid-quarter and waiting for the next quarter would push the
+    first signal (and so the first out-of-sample window) back by months.
+
+    Recomputing daily instead would make a name near the liquidity boundary
+    flap in and out, and a held name that slipped out would lose its rank and
+    exit under X1, which live never does between rebuilds. Row D depends only
+    on rows <= D. Dates before the first rebuild have no members.
+    """
+    idx = daily.index
+    quarter = pd.Series(idx.year * 4 + (idx.month - 1) // 3, index=idx)   # 4 quarters a year
+    rebuild = (quarter != quarter.shift(1)).to_numpy().copy()
+    nonempty = daily.any(axis=1).to_numpy()
+    if nonempty.any():
+        rebuild[nonempty.argmax()] = True
+    source = pd.Series(np.where(rebuild, np.arange(len(idx)), np.nan)).ffill()
+    held = np.full(daily.shape, False)
+    ok = source.notna().to_numpy()
+    held[ok] = daily.to_numpy()[source[ok].astype(int).to_numpy()]
+    return pd.DataFrame(held, index=idx, columns=daily.columns)
+
+
 def todays_universe(
     closes: pd.DataFrame, volumes: pd.DataFrame, cfg: Config,
     allowed: Iterable[str] | None = None,

@@ -348,25 +348,28 @@ def test_hand_checked_benchmark_buy_and_hold(tiny):
 
 def two_stock_market() -> MarketData:
     """A (rising) has the LOWER dollar volume until row 12, then overtakes B
-    (falling). With one universe slot, point-in-time membership is B until A
-    overtakes it; hindsight membership is A throughout."""
-    n = 30
+    (falling). With one universe slot, membership is B, chosen at the first
+    build, and stays B for the whole first quarter even after A overtakes it on
+    volume. The Apr 1 rebuild picks A; the first entry week after that is May 6
+    (April's entry decision was Fri Mar 29, before the rebuild). Hindsight
+    membership is A throughout."""
+    n = 100                                    # Mon 2024-01-01 .. Fri 2024-05-17
     b_vol = [5e4] * 12 + [1e3] * (n - 12)
     return hand_market(n, b_vol=b_vol)
 
 
-def test_point_in_time_universe_delays_the_entry_until_the_stock_qualifies(tiny):
+def test_point_in_time_universe_waits_for_the_quarterly_rebuild(tiny):
     one = variant(tiny, universe={"max_symbols": 1})
     pit = simulate(two_stock_market(), one)
-    assert [(t.date.strftime("%m-%d"), t.symbol) for t in fills(pit, "BUY")] == [("02-05", "A")]
+    assert [(t.date.strftime("%m-%d"), t.symbol) for t in fills(pit, "BUY")] == [("05-06", "A")]
 
 
 def test_break_todays_universe_buys_the_stock_before_it_qualified(tiny):
     one = variant(tiny, universe={"max_symbols": 1})
     pit = simulate(two_stock_market(), one)
     hindsight = simulate(two_stock_market(), one, BacktestOptions(point_in_time_universe=False))
-    assert fills(hindsight, "BUY")[0].date == pd.Timestamp("2024-01-08")     # a month earlier
-    assert hindsight.equity.iloc[-1] > pit.equity.iloc[-1] * 1.02            # and much richer
+    assert fills(hindsight, "BUY")[0].date == pd.Timestamp("2024-01-08")     # four months earlier
+    assert hindsight.equity.iloc[-1] > pit.equity.iloc[-1] * 1.02            # and richer
     assert hindsight.equity.iloc[-1] != pit.equity.iloc[-1]
 
 
@@ -387,6 +390,21 @@ def test_break_no_costs_flatters_the_result(tiny):
     bad = simulate(hand_market(), tiny, BacktestOptions(apply_costs=False))
     assert bad.equity.iloc[-1] > good.equity.iloc[-1]
     assert all(t.cost == 0.0 for t in bad.trades) and all(t.cost > 0 for t in good.trades)
+
+
+@pytest.mark.parametrize("switch", [
+    {"same_bar_execution": True}, {"apply_costs": False}, {"point_in_time_universe": False}])
+def test_a_broken_run_cannot_pass_acceptance(cfg, switch):
+    """Numbers that would pass on every criterion are still FAIL: invalid run."""
+    great = _result_with(cfg, options=BacktestOptions(**switch))
+    great.equity_curve = noisy(0.0012, 1000, 0.006)
+    verdict = check_acceptance(great, cfg, echo=False)
+    assert all(ok for ok, _, _ in verdict.results.values())                # would pass...
+    assert not verdict.passed and verdict.reason == "invalid run"
+    assert "FAIL (invalid run)" in verdict.report()
+    good = _result_with(cfg)
+    good.equity_curve = noisy(0.0012, 1000, 0.006)
+    assert check_acceptance(good, cfg, echo=False).passed                  # the same numbers, valid
 
 
 def test_the_report_flags_a_broken_run(cfg):

@@ -18,7 +18,8 @@ Signals are computed at the close of the last trading day of each week (a
 Friday). Orders decided then fill at the NEXT bar's open. Exits (X1-X4) are
 checked every week; entries (E1-E9) only in the first weekly execution of each
 month (spec section 9), together with the drift rebalance. The universe for
-each date is chosen point-in-time (spec 2.3), not from today's snapshot.
+each date is chosen point-in-time (spec 2.3), rebuilt quarterly like live, not
+from today's snapshot.
 
 Nothing is fitted, so the "in-sample" years cannot be tuned on; every parameter
 comes from config.yaml and is the same in every window. The strategy is
@@ -57,6 +58,7 @@ from src.data.universe import (
     load_contract_info,
     open_db,
     point_in_time_universe,
+    quarterly_universe,
     todays_universe,
 )
 from src.runlog import finish_run, start_run
@@ -228,6 +230,7 @@ class BacktestResult:
 class AcceptanceVerdict:
     passed: bool
     results: dict[str, tuple[bool, float, float]]  # name -> (pass, actual, threshold)
+    reason: str | None = None    # why the verdict is FAIL regardless of the numbers
 
     LABELS = {
         "A1": "CAGR vs SPY, after costs (actual: strategy; threshold: SPY)",
@@ -243,7 +246,8 @@ class AcceptanceVerdict:
         for code, (ok, actual, threshold) in self.results.items():
             lines.append(f"  {code}  {'PASS' if ok else 'FAIL'}  {self.LABELS[code]}: "
                          f"{actual:.4f} vs {threshold:.4f}")
-        lines.append(f"  VERDICT: {'PASS' if self.passed else 'FAIL'}")
+        lines.append(f"  VERDICT: {'PASS' if self.passed else 'FAIL'}"
+                     + (f" ({self.reason})" if self.reason else ""))
         if not self.results["A1"][0]:
             lines.append("  A1 failed: stop. Buy SPY and keep the hour (spec section 13).")
         return "\n".join(lines)
@@ -375,8 +379,11 @@ class _Engine:
         self.col = {c: j for j, c in enumerate(data.closes.columns)}
         self.open, self.close = data.opens.to_numpy(), data.closes.to_numpy()
 
-        make_universe = point_in_time_universe if options.point_in_time_universe else todays_universe
-        universe = make_universe(data.closes, data.volumes, cfg, data.allowed)
+        if options.point_in_time_universe:
+            universe = quarterly_universe(
+                point_in_time_universe(data.closes, data.volumes, cfg, data.allowed))
+        else:
+            universe = todays_universe(data.closes, data.volumes, cfg, data.allowed)
         self.panel = compute_panel(data.closes, data.highs, data.lows, cfg, universe)
         self.returns = self.panel.closes / self.panel.closes.shift(PRIOR_BAR) - 1
 
@@ -736,6 +743,9 @@ def check_acceptance(result: BacktestResult, cfg: Config, echo: bool = True) -> 
     If A1 fails, the honest move is to stop and buy the index. That decision
     is pre-committed here rather than made later while attached to the build.
 
+    A run made with any `BacktestOptions` switch set is FAIL, "invalid run",
+    whatever its numbers say: those switches make the backtest wrong on purpose.
+
     Every comparison is written so that NaN fails: a criterion that cannot be
     computed is not passed. Prints PASS/FAIL per criterion unless `echo` is False.
     """
@@ -753,7 +763,10 @@ def check_acceptance(result: BacktestResult, cfg: Config, echo: bool = True) -> 
                result.max_single_window_contribution, a.max_single_window_contribution),
     }
     results = {k: (bool(ok), float(actual), float(limit)) for k, (ok, actual, limit) in checks.items()}
-    verdict = AcceptanceVerdict(all(ok for ok, _, _ in results.values()), results)
+    invalid = not result.options.is_valid_run
+    verdict = AcceptanceVerdict(
+        all(ok for ok, _, _ in results.values()) and not invalid, results,
+        "invalid run" if invalid else None)
     if echo:
         print(verdict.report())
     return verdict
@@ -819,6 +832,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = walk_forward(cfg)
         verdict = check_acceptance(result, cfg, echo=False)
+        if verdict.reason:
+            # Not a result. No report file, and the run is recorded as failed.
+            log.error("%s: not recording this as a result", verdict.reason)
+            finish_run(conn, run_id, "failed", error=verdict.reason)
+            return 3
         text = format_report(result, verdict, cfg)
         print(text)
         REPORTS_DIR.mkdir(exist_ok=True)

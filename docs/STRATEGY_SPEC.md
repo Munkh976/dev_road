@@ -151,9 +151,12 @@ bars on or before `D`. The §2 filters are applied as of `D` with the same
 definitions as §2.2: `avg_dollar_volume_20d >= $20M`, `price >= $10` (close on
 `D`), `days_listed >= 400` (calendar days from the first cached bar to `D`),
 and a bar on `D` (no bar, no price, not tradable). Ranking is by dollar volume
-descending, ties broken by symbol. The result is recomputed every trading day;
-live trading recomputes it quarterly (§2.2), a difference that only makes the
-backtest slightly more responsive than live.
+descending, ties broken by symbol. Membership is **rebuilt on the first trading
+day of each calendar quarter, from data through that day's close, and held until
+the next rebuild**, matching live (§2.2). One extra rebuild happens the first day
+the list is non-empty, because the data starts mid-quarter. (1.0.3 through the
+first 1.0.5 draft recomputed daily; that let a held name slip out of the list
+between rebuilds, lose its rank and exit under X1, which live never does.)
 
 Needs full history for every constituent, not only today's 150:
 `refresh --backfill --all-constituents` (§3.2).
@@ -596,11 +599,16 @@ best window's excess return over the sum of all windows' excess returns; when
 that sum is not positive there is no edge to apportion and A6 **fails**. Any
 criterion that cannot be computed fails.
 
-**Point-in-time universe daily, live quarterly.** A held name that drops out of
-the daily point-in-time top 150 has no rank that day and exits under X1
-(unevaluable -> exit, §6). Live, a held name stays in the quarterly snapshot for
-the quarter. The backtest can therefore churn somewhat more than live on names
-near the liquidity boundary. It errs pessimistic.
+**Quarterly universe, as live.** Membership is rebuilt on the first trading day
+of each quarter (§2.3) and is stable in between, so a held name cannot lose its
+rank mid-quarter. At a rebuild a held name that no longer qualifies has no rank
+and exits under X1 (unevaluable -> exit, §6), as it would live.
+
+**An invalid run cannot pass.** `BacktestOptions` switches (same-bar execution,
+no costs, today's universe) exist only so tests can break the engine on purpose.
+`check_acceptance` returns FAIL with reason "invalid run" if any is set,
+whatever the numbers, and `main` records such a run as failed with no report and
+no verdict.
 
 **Left out, and printed in every report:** E5 always passes; the risk engine's
 order-level checks (order size, order count, drawdown halt) are not applied;
@@ -670,4 +678,4 @@ The third one is the one that will actually happen. Watch for it.
 | 1.0.2 | 2026-09-20 | Pre-backtest; spends no parameter budget. (1) `days_listed` counts calendar days, not bars (§2.2). (2) `data.history_years` 15 -> 22 so the backtest can reach the 2008-09 crash, with the survivorship-bias trade-off recorded, and `refresh --backfill` added to refetch existing caches at the new depth (§3.2). This is a data-coverage change, not a strategy parameter. |
 | 1.0.3 | 2026-09-20 | Pre-backtest; spends no parameter budget. (1) The backtest universe is chosen point-in-time: for each date, top 150 by trailing 20-day dollar volume among current constituents using only data available then (§2.3), instead of today's saved snapshot. (2) Records what remains biased: survivorship in the membership list, sectors and security type from today's labels. (3) `refresh --backfill --all-constituents` added, resumable (§3.2). (4) Notes the IBKR volume undercount does not affect selection (150th name ~14x the floor); no config change. |
 | 1.0.4 | 2026-09-20 | Pre-backtest; spends no parameter budget. Rules and sizing implemented, which forced these readings into the spec: E5 always passes in backtests; E7 enforced after sizing, smallest new name first; E8 checked at `max_position_weight`, unknown sector blocks; greedy slot allocation in rank order; exit-rule reporting priority X2>X3>X4>X1; unevaluable exit checks fail closed. **§8 correction:** "clip then renormalize" breaks the 20% cap with fewer than five names (two names -> 50% each); replaced by pin-at-bound-and-redistribute so the bounds always hold (§8). |
-| 1.0.5 | 2026-09-20 | Pre-backtest; spends no parameter budget. Backtest engine implemented; the protocol's open choices are fixed in §12.1: signals at the weekly close and fills at the next open, monthly entries and weekly exits, continuous simulation with out-of-sample-only scoring, windows anchored to the data start with a flagged partial last window, half the spread charged per side, turnover and Sharpe definitions, A6 and uncomputable criteria fail closed, no same-week rebuy of a stopped-out name, and the daily-vs-quarterly universe asymmetry (pessimistic for the backtest). |
+| 1.0.5 | 2026-09-20 | Pre-backtest; spends no parameter budget. Backtest engine implemented; the protocol's open choices are fixed in §12.1: signals at the weekly close and fills at the next open, monthly entries and weekly exits, continuous simulation with out-of-sample-only scoring, windows anchored to the data start with a flagged partial last window, half the spread charged per side, turnover and Sharpe definitions, A6 and uncomputable criteria fail closed, no same-week rebuy of a stopped-out name; the backtest universe is rebuilt quarterly to match live (supersedes the daily recompute of 1.0.3); a run with any BacktestOptions switch set fails acceptance as "invalid run". config.yaml `strategy.version` now matches (metadata only). |

@@ -4,7 +4,7 @@
 
 strategy:
   name: weekly_momentum_v1
-  version: 1.0.2
+  version: 1.0.5
   spec: docs/STRATEGY_SPEC.md
 
 # ---------------------------------------------------------------- capital

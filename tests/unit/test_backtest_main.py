@@ -93,6 +93,22 @@ def test_main_writes_a_report_and_records_the_verdict(refresh_cfg, db, tmp_path,
     assert run["notes"].startswith("acceptance ") and "A1=" in run["notes"] and "A6=" in run["notes"]
 
 
+def test_main_never_records_an_invalid_run_as_a_result(refresh_cfg, db, tmp_path, monkeypatch):
+    build_world(refresh_cfg)
+    monkeypatch.setattr(wf, "REPORTS_DIR", tmp_path / "reports")
+    real = wf.walk_forward
+    monkeypatch.setattr(
+        wf, "walk_forward",
+        lambda cfg: real(cfg, options=wf.BacktestOptions(apply_costs=False)))
+
+    assert main([]) == 3
+
+    run = db.execute("SELECT * FROM runs WHERE run_type='backtest'").fetchone()
+    assert run["status"] == "failed" and run["error"] == "invalid run"
+    assert run["notes"] == "walk-forward, out-of-sample only"      # no verdict recorded
+    assert not (tmp_path / "reports").exists()
+
+
 def test_main_records_a_failed_run_when_history_is_too_short(refresh_cfg, db, tmp_path, monkeypatch):
     cache = PriceCache(refresh_cfg.cache_path)
     cache.write("SPY", recent_bars(400, seed=1))

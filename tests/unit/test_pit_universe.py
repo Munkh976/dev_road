@@ -14,6 +14,7 @@ from src.data.universe import (
     Constituent,
     ContractInfo,
     point_in_time_universe,
+    quarterly_universe,
     select_universe,
     todays_universe,
 )
@@ -147,3 +148,50 @@ def test_agrees_with_the_snapshot_filters_on_the_last_date(refresh_cfg):
     m = point_in_time_universe(closes, volumes, cfg)
     assert sorted(m.columns[m.iloc[-1]]) == sorted(r.symbol for r in sel.rows)
     assert len(sel.rows) == 3
+
+
+# ------------------------------------------------------------ quarterly hold
+
+
+def daily_frame(rows, start="2024-01-02"):
+    idx = pd.bdate_range(start, periods=len(rows), name="date")
+    return pd.DataFrame(rows, index=idx, columns=["A", "B"], dtype=bool)
+
+
+def test_membership_is_stable_within_a_quarter_and_changes_at_the_rebuild():
+    n = 130                                        # 2024-01-02 .. 2024-06-28
+    idx = pd.bdate_range("2024-01-02", periods=n, name="date")
+    # daily answer flaps every other day, so any daily use would show it
+    daily = pd.DataFrame({"A": [i % 3 == 0 for i in range(n)],
+                          "B": [i % 3 != 0 for i in range(n)]}, index=idx)
+    held = quarterly_universe(daily)
+    for lo, hi in (("2024-01-02", "2024-03-29"), ("2024-04-01", "2024-06-28")):
+        block = held.loc[lo:hi]
+        assert len(block.drop_duplicates()) == 1, "membership moved inside a quarter"
+    # rebuilt on the first trading day of the quarter, from that day's own row
+    assert held.loc["2024-04-01"].to_dict() == daily.loc["2024-04-01"].to_dict()
+    assert held.loc["2024-01-02"].to_dict() == daily.loc["2024-01-02"].to_dict()
+    assert held.loc["2024-03-29"].to_dict() == daily.loc["2024-01-02"].to_dict()
+    assert held.loc["2024-04-01"].to_dict() != held.loc["2024-03-29"].to_dict()
+
+
+def test_first_build_happens_when_the_universe_first_exists_not_next_quarter():
+    daily = daily_frame([[False, False]] * 20 + [[True, False]] * 60)   # non-empty from row 20
+    held = quarterly_universe(daily)
+    assert not held.iloc[:20].any().any()                               # nobody before the first build
+    assert held["A"].iloc[20:].all() and not held["B"].any()
+
+
+def test_quarterly_membership_uses_no_future_rows():
+    rng = np.random.default_rng(4)
+    daily = daily_frame(rng.random((200, 2)) > 0.5)
+    full = quarterly_universe(daily)
+    for cut in (30, 70, 131):
+        pd.testing.assert_frame_equal(quarterly_universe(daily.iloc[:cut]), full.iloc[:cut])
+
+
+def test_a_held_name_keeps_its_membership_when_it_slips_out_mid_quarter():
+    rows = [[True, True]] * 40 + [[False, True]] * 60        # A leaves the daily top N on row 40
+    held = quarterly_universe(daily_frame(rows))              # rows 0-59 are Q1 (Jan 2 .. Mar 22)
+    assert held["A"].iloc[:64].all()                          # still a member until the next rebuild
+    assert not held["A"].iloc[-1]                             # gone after the April rebuild
