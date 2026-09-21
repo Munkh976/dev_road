@@ -15,7 +15,7 @@ def raw() -> dict:
 
 def test_the_shipped_config_is_v2_and_says_so():
     cfg = Config(**raw())
-    assert (cfg.strategy.name, cfg.strategy.version) == ("weekly_momentum_v2", "2.0.0")
+    assert (cfg.strategy.name, cfg.strategy.version) == ("weekly_momentum_v2", "2.0.1")
     assert cfg.account.paper_trading and cfg.risk.require_manual_approval
 
 

@@ -8,7 +8,8 @@ data/cache/_manifest.json
 db/*.db
 db/*.db-wal
 db/*.db-shm
-reports/*.html
+reports/*
+!reports/backtest_*.md
 backtest_results/
 
 # journal entries are yours; keep the directory, ignore the contents

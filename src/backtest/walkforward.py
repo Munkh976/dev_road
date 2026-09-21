@@ -523,6 +523,13 @@ class _Engine:
         if o.rule in (TOPUP, RESTORE):
             self.topup_above.pop(sym, None)             # it beat its peak; the block is spent
             self.restore.discard(sym)
+        if o.rule == TOPUP:
+            # A ladder top-up only happens after a full recovery (a close above the
+            # prior peak), so it is effectively a fresh position: re-arm every level
+            # and measure the stop from the close of the bar it fills on (the NaN is
+            # replaced by that close in _update_marks, which runs next).
+            self.ladder_fired[sym] = 0
+            self.highs[sym] = float("nan")
         self.shares[sym] += qty
         self.trades.append(Trade(self.dates[i], sym, "BUY", qty, price, value, cost, o.rule))
 

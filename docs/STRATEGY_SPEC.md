@@ -1,10 +1,10 @@
 # Strategy Specification: `weekly_momentum_v2`
 
-**Status:** v2.0.0. Written after v1 failed acceptance; **not yet run on real data.**
+**Status:** v2.0.1. Written after v1 failed acceptance; **not yet run on real data.**
 **Capital:** $15,000 (paper first)
 **Owner:** [you]
 **Created:** 2026-09-19 (v1) / 2026-09-21 (v2)
-**Version:** 2.0.0
+**Version:** 2.0.1
 
 > This document defines the strategy completely enough to backtest without
 > further decisions. If you find yourself making a judgment call while
@@ -458,7 +458,8 @@ bar), the position is sold in full.
   entry price and never intraday. A name bought at 100 that ran to 150 and is now
   130 is up 30% on entry and 13.3% below its peak: level 1 fires.
 - **Each level fires at most once per position.** A position is "one position" from
-  its buy until it is sold in full; a top-up (below) does not reset the ladder.
+  its buy until it is sold in full, or until it is topped up (below), which starts it
+  afresh.
 - Sizes. If `c` levels are now crossed and `fired` are already used, `c - fired`
   fire together and sell `(c - fired) / (n - fired)` of the **current** shares.
   That is a third of the position, then half of what is left (another third of the
@@ -469,9 +470,12 @@ bar), the position is sold in full.
   triggered. A top-up also needs E1-E5 and the sector cap; a name still held takes
   no E6 slot. The top-up buys back toward the name's target weight (§8) and is
   limited by the room under the invested target. Once it is made, the block is
-  spent. *Consequence to be aware of:* because the levels do not reset, a name that
-  has been topped back up to full size is protected only by L2 and L3 the next time
-  it falls, not L1.
+  spent. **A top-up resets the ladder:** a top-up only happens after a full recovery
+  (a close above the prior peak), so it is effectively a fresh position. The position
+  high restarts at the close of the bar the top-up fills on and all three levels
+  (-12/-20/-28) are armed again. Otherwise a recovered name's first protection would be
+  -20%, contradicting the intent of the ladder. (A RESTORE after a defensive trim does
+  not reset anything: a pro rata trim is not a recovery.)
 - Why 12/20/28. v1's stop measured 3 x ATR and fired at 6-12% below the peak, which
   ejected momentum names on ordinary noise. The ladder gives up a third at 12% and
   keeps the rest through a normal pullback of a volatile name.
@@ -710,8 +714,9 @@ Written down now so they are not discovered as surprises later.
    the book goes to 40% means a fast crash is mostly taken at 85%. That is the price
    of not whipsawing; it is the same trade v1's single reading made in the other
    direction.
-9. **Ladder levels do not reset after a top-up (§6.1).** A name topped back up to full
-   size has only L2 and L3 left, so its next 12% fall is not acted on.
+9. **Repeated ladder cycles cost commissions.** Because a top-up re-arms the ladder, a
+   name that oscillates around its peak can be sold a third and topped up more than once;
+   the report's ladder and top-up counts show how often.
 
 ---
 
@@ -897,3 +902,4 @@ The third one is the one that will actually happen. Watch for it.
 | 1.0.4 | 2026-09-20 | Pre-backtest; spends no parameter budget. Rules and sizing implemented, which forced these readings into the spec: E5 always passes in backtests; E7 enforced after sizing, smallest new name first; E8 checked at `max_position_weight`, unknown sector blocks; greedy slot allocation in rank order; exit-rule reporting priority X2>X3>X4>X1; unevaluable exit checks fail closed. **§8 correction:** "clip then renormalize" breaks the 20% cap with fewer than five names (two names -> 50% each); replaced by pin-at-bound-and-redistribute so the bounds always hold (§8). |
 | 1.0.5 | 2026-09-20 | Pre-backtest; spends no parameter budget. Backtest engine implemented; the protocol's open choices are fixed in §12.1: signals at the weekly close and fills at the next open, monthly entries and weekly exits, continuous simulation with out-of-sample-only scoring, windows anchored to the data start with a flagged partial last window, half the spread charged per side, turnover and Sharpe definitions, A6 and uncomputable criteria fail closed, no same-week rebuy of a stopped-out name; the backtest universe is rebuilt quarterly to match live (supersedes the daily recompute of 1.0.3); a run with any BacktestOptions switch set fails acceptance as "invalid run". config.yaml `strategy.version` now matches (metadata only). |
 | 2.0.0 | 2026-09-21 | **New strategy, `weekly_momentum_v2`, written after v1 failed acceptance (tag `backtest-v1`; v1's verdict is final).** Spends 4 of 5 parameter changes, each logged in `parameter_changes` with its rationale (§12): (1) invested target 85% replaces the volatility target and E9 (weekly refill below 80%, no cap on new names, inverse-vol weights bounded 5%-15% scaled to the target; §5.1, §8); (2) graded market filter replaces X2 (two consecutive weekly readings: 40% target, pro rata trim, no new names; two above: 85%; §4.1); (3) laddered trailing stop -12/-20/-28% from the highest close replaces X3, with top-up only after a new peak and re-entry only at rank <= 10 and above the 50-day SMA, at least 1 week later (§6.1, §6.2); (4) ten positions, entry rank <= 10, exit rank > 16 (§6, §8). **No take-profit rule, with the reason recorded (§6.3).** Adds the live-only risk dial (§8.2), not simulated. A1 tightened to SPY + 2.0 points (§13). **If v2 fails, development as a trading strategy stops; v2 runs on paper only.** Implementation readings fixed here: the regime folds from a DEFENSIVE start; invested is measured after the week's sells; RESTORE brings defensively-trimmed names back (§8.1); cap-drift trim added and the +/-25% drift rebalance and monthly entry cadence retired; A6 prints `no positive excess return`. Retired keys: `exit.trailing_stop_atr`, `exit.exit_all_on_market_off`, `entry.max_new_per_rebalance`, `sizing.target_portfolio_vol`, `scale_up_allowed`, `covariance_window`, `schedule.drift_tolerance`. `strategy.name` and `version` in config.yaml match. |
+| 2.0.1 | 2026-09-21 | Clarifies change 3 before any v2 result exists; **spends no parameter budget** (still 4 of 5). A top-up after a ladder sale resets the ladder: position high restarts at the fill-bar close and all three levels re-arm (§6.1), because a top-up follows a full recovery and is effectively a fresh position; without it a recovered name's first protection would be -20%. Also: the A1 margin (§13) is recorded in the spec only, not as a budget row, since it tightens the test. `strategy.version` 2.0.1. |

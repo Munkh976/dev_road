@@ -99,7 +99,7 @@ def evaluate_exits(
     If `c` levels are now crossed, `c - fired` are new, and they sell
     `(c - fired) / (n - fired)` of the CURRENT shares. That is a third of the
     original, then half of what is left (another third), then all of it, and it
-    stays well-defined after a top-up. A gap that crosses several levels at once
+    stays well-defined if the position was topped up (a top-up re-arms the ladder). A gap that crosses several levels at once
     sells them all together. Crossing the last level sells everything.
 
     Why a ladder, not one stop. v1's 3 x ATR stop fired at 6-12%, not the 15-25%

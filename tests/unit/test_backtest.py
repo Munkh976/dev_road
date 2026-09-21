@@ -389,10 +389,37 @@ def test_a_partly_sold_name_is_topped_up_only_after_it_beats_its_prior_peak(tiny
     assert [t.rule for t in weak.trades if t.side == "BUY"] == ["ENTRY"]   # so never bought back
 
 
-def test_the_ladder_level_does_not_fire_again_after_the_top_up(tiny):
-    """One partial sale, one top-up, and nothing else on the ladder in the strong market."""
-    sim = simulate(ladder_market(STRONG), no_x4(tiny))
-    assert [t.rule for t in sim.trades if t.rule.startswith("L")] == ["L1"]
+RETRACE = [-0.04, -0.03, -0.04, -0.03, -0.04]      # rows 30-34: ~16.8% off the new high, level 1 only
+
+
+def test_a_topup_rearms_the_ladder_and_restarts_the_high(tiny):
+    """After the top-up (Mon Feb 5, a full recovery above the old peak) the name is a
+    fresh position: a later 12% fall from the new high fires L1 again. Without the
+    reset its first protection would be L2 at -20%, which this fall does not reach."""
+    data = ladder_market(STRONG + [0.01, 0.012] + RETRACE + [0.005])
+    sim = simulate(data, no_x4(tiny))
+    assert [t.rule for t in sim.trades if t.rule.startswith("L") or t.rule == "TOPUP"] == [
+        "L1", "TOPUP", "L1"]
+    c = data.closes["A"]
+    topup = next(t for t in sim.trades if t.rule == "TOPUP")
+    high = c.loc[topup.date:].iloc[:10].max()
+    second = [t for t in sim.trades if t.rule == "L1"][1]
+    decision = c.index.get_loc(second.date) - 1
+    assert 0.12 <= 1 - c.iloc[decision] / high < 0.20              # level 1 only, from the NEW high
+    assert c.iloc[decision] > c.iloc[14] * 0.88                    # and not 12% below the OLD peak
+    assert not any(t.rule == "L2" for t in sim.trades)
+
+
+def test_break_topup_does_not_rearm_the_ladder(tiny):
+    bad = load_mutant(
+        "src.backtest.walkforward",
+        '            self.ladder_fired[sym] = 0\n            self.highs[sym] = float("nan")\n',
+        "            pass\n")
+    data = ladder_market(STRONG + [0.01, 0.012] + RETRACE + [0.005])
+    good = simulate(data, no_x4(tiny))
+    broken = bad.simulate(data, no_x4(tiny))
+    assert [t.rule for t in good.trades if t.rule.startswith("L")] == ["L1", "L1"]
+    assert [t.rule for t in broken.trades if t.rule.startswith("L")] == ["L1"]
 
 
 def test_break_the_stop_is_measured_from_entry_not_the_peak(tiny):

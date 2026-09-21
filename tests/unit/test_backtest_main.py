@@ -6,11 +6,10 @@ WM_DB_PATH at temp paths, and the report goes to a temp reports directory.
 
 from __future__ import annotations
 
-import pandas as pd
 import pytest
 
 from src.backtest import walkforward as wf
-from src.backtest.walkforward import BacktestError, load_market_data, main, walk_forward
+from src.backtest.walkforward import load_market_data, main, walk_forward
 from src.data.cache import PriceCache
 from src.data.universe import ContractInfo, open_db, save_contract_info
 from tests.conftest import write_constituents
